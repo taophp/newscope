@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "common",
+    "mynewslens",
+]
+
+# Workspace-level settings (optional)
+# - Add shared configuration here as needed.
+# - Keep this file minimal; package metadata lives in each crate's Cargo.toml.

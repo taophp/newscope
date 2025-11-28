@@ -1,0 +1,187 @@
+# Newscope example configuration
+# Copy this file to config.toml and edit values as needed.
+#
+# Notes:
+# - Multiple users may be defined here (for MVP users are configured via this file).
+# - Secrets (API keys) for remote LLMs should be provided via environment variables when possible.
+# - Times use HH:MM 24-hour format and are interpreted in the host's local timezone.
+# - Paths may be relative to the working directory or absolute.
+
+# -------------------------
+# Database configuration
+# -------------------------
+[database]
+# Path to the SQLite database file. The directory will be created if missing.
+path = "data/newscope.db"
+
+# -------------------------
+# Server / runtime options
+# -------------------------
+[server]
+# Address and port to bind the HTTP server (Rocket will listen here).
+bind = "0.0.0.0"
+port = 8000
+
+# If true, the server will run in read-only mode for the UI (no write operations).
+# Useful for demo or debugging scenarios. Default: false
+read_only = false
+
+# -------------------------
+# Scheduler (worker) config
+# -------------------------
+[scheduler]
+# Times at which the ingestion worker should run. Default example: 05:00, 11:00, 17:00, 23:00
+times = ["05:00", "11:00", "17:00", "23:00"]
+
+# Maximum number of concurrent feed fetch tasks overall (not per-domain).
+max_concurrent_fetches = 8
+
+# -------------------------
+# Fetch / politeness settings
+# -------------------------
+[politeness]
+# Delay in seconds between requests to the same domain (default: 1 second)
+delay_seconds = 1
+
+# Max concurrent requests allowed per domain (default: 2)
+concurrency_per_domain = 2
+
+# Maximum response size in bytes to fetch and process (default 524288 = 512 KiB)
+max_response_bytes = 524288
+
+# HTTP timeout in seconds for fetch operations
+fetch_timeout_seconds = 10
+
+# Respect robots.txt? Default: false (user-controlled personal app).
+# Set to true to honor robots rules for crawlers.
+respect_robots_txt = false
+
+# -------------------------
+# LLM / AI configuration
+# -------------------------
+[llm]
+# Adapter can be "local", "remote", or "none"
+# - "local" expects a configured local model path/engine
+# - "remote" will call an external API endpoint
+# - "none" disables LLM features (extractive fallback only)
+adapter = "remote"
+
+# Local model configuration (only used when adapter = "local")
+[llm.local]
+# Path to local model or engine config (example placeholder)
+model_path = "/opt/models/ggml-model.bin"
+# Maximum threads for local inference (set to a low number on RPi)
+max_threads = 1
+
+# Remote provider configuration (only used when adapter = "remote")
+# Remote provider configuration (only used when adapter = "remote")
+[llm.remote]
+# URL of the remote LLM API (Ollama default)
+api_url = "http://localhost:11434/v1/chat/completions"
+
+# Name of the environment variable that contains the API key
+# For Ollama, this can be any value, but the env var must exist.
+api_key_env = "OLLAMA_API_KEY"
+
+# Model to use (Ollama model name)
+model = "llama3.2:3b"
+
+# Timeout in seconds for remote LLM calls
+timeout_seconds = 60
+
+# -------------------------
+# Logging
+# -------------------------
+[logging]
+# Default log level: "info", "debug", "warn", "error"
+level = "info"
+
+# -------------------------
+# Retention and storage options
+# -------------------------
+[storage]
+# Number of days to keep archived sessions and chat transcripts.
+# Set to 0 to keep indefinitely.
+session_retention_days = 0
+
+# -------------------------
+# Users (defined in config for MVP)
+# -------------------------
+# You may add multiple [[users]] blocks. Each user may optionally include a list of feeds.
+# Passwords should be stored as secure hashes (argon2/bcrypt). For initial testing you can
+# set password_hash to null and rely on local trust/other auth approaches.
+#
+# Example defines two users.
+
+[[users]]
+username = "alice"
+display_name = "Alice Doe"
+# Preferred language for summaries and UI (e.g., "fr" or "en")
+preferred_language = "fr"
+# Store a password hash (argon2 recommended). Use a placeholder during development.
+password_hash = "<argon2_hash_or_empty_for_local_auth>"
+# Optional per-user feed list (initial feeds). Each feed is a table entry.
+[[users.feeds]]
+url = "https://blog.rust-lang.org/feed.xml"
+title = "Rust Blog"
+[[users.feeds]]
+url = "https://example.com/tech/rss"
+title = "Example Tech"
+
+[[users]]
+username = "bob"
+display_name = "Bob Researcher"
+preferred_language = "en"
+password_hash = "<argon2_hash_or_empty_for_local_auth>"
+[[users.feeds]]
+url = "https://another-site.com/rss"
+title = "Another Site"
+
+# -------------------------
+# Feed import and OPML
+# -------------------------
+[import]
+# Default directory to store imported OPML files (optional)
+opml_import_dir = "data/opml_imports"
+
+# When importing many feeds in parallel, use bounded concurrency to avoid overload
+# during import operations.
+import_concurrency = 6
+
+# -------------------------
+# Scoring defaults (tunable)
+# -------------------------
+[scoring]
+# Weights used for computing article scores. Tunable parameters:
+# final_score = w_pref*preference + w_red*redundancy + w_recency*recency + w_src*source_weight + w_novel*novelty
+w_pref = 1.5
+w_red = 2.0
+w_recency = 1.0
+w_src = 0.5
+w_novel = 0.75
+
+# Serendipity factor: fraction [0.0 - 1.0] controlling occasional surfacing of novel items
+serendipity = 0.05
+
+# -------------------------
+# Admin / maintenance
+# -------------------------
+[admin]
+# If true, the application will automatically run DB migrations at startup.
+auto_migrate = true
+
+# Path to a directory where the app can write diagnostics or exports
+diagnostics_dir = "data/diagnostics"
+
+# -------------------------
+# Examples of environment usage (documentational)
+# -------------------------
+# To run with a remote LLM API key, export the environment variable named above:
+#   export NEWSCOPE_LLM_API_KEY=\"your_api_key_here\"
+#
+# Example command lines:
+#   ./newscope --config config.toml                 # start server + worker (default)
+#   ./newscope --config config.toml --no-worker    # start server only
+#   ./newscope --config config.toml --worker-only  # run worker only (no HTTP)
+#
+# End of example config.

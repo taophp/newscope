@@ -1,0 +1,68 @@
+version: "3.8"
+
+services:
+  mynewslens:
+    # Build from local Dockerfile. The Dockerfile should produce an image
+    # that contains the `mynewslens` binary (recommended at /usr/local/bin/mynewslens).
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mynewslens:latest
+    container_name: mynewslens
+    restart: unless-stopped
+
+    # Environment variables:
+    # - CONFIG_PATH (inside container) is where the app reads its config toml
+    # - LLM_API_KEY can be provided via environment for remote LLM adapters (optional)
+    # - RUST_LOG can be overridden to set runtime log level
+    env_file:
+      - ./config.env # optional file to hold secrets / overrides (create if needed)
+    environment:
+      - CONFIG_PATH=/config/config.toml
+      - RUST_LOG=${RUST_LOG:-info}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      # Add any other env vars you need here
+
+    # Mounts:
+    # - ./data will contain the SQLite database file (e.g. data/mynewslens.db)
+    # - ./config.toml is the configuration file for MyNewsLens (mounted read-only)
+    volumes:
+      - ./data:/data
+      - ./config.toml:/config/config.toml:ro
+
+    # Expose the web UI / API port (adjust if Rocket configured for another port)
+    ports:
+      - "8000:8000"
+
+    # Default command runs the bundled binary using the provided config.
+    # The binary supports flags documented in the README:
+    #  --config /config/config.toml
+    #  --no-worker       (server only)
+    #  --worker-only     (worker only)
+    #
+    # You can override the command in docker-compose overrides or via `docker run` to
+    # run only the server or only the worker:
+    #  docker-compose run --rm mynewslens ./mynewslens --config /config/config.toml --no-worker
+    #  docker-compose run --rm mynewslens ./mynewslens --config /config/config.toml --worker-only
+    command: ["/usr/local/bin/mynewslens", "--config", "/config/config.toml"]
+
+    # Healthcheck: ensure the HTTP server responds on the health endpoint.
+    # Implement a lightweight `/health` or `/api/v1/status` endpoint in the server.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8000/health || exit 1"]
+      interval: 1m30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Volumes on compose level are optional since we mount a host directory.
+# If you prefer a named volume, uncomment below and adjust the `volumes` mapping above.
+#volumes:
+#  mynewslens_data:
+#    driver: local

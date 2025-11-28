@@ -1,0 +1,14 @@
+
+[database]
+path = "data/verification.db"
+
+[scheduler]
+times = []
+worker_interval_seconds = 5
+
+[admin]
+auto_migrate = true
+
+[[users]]
+username = "verifier"
+display_name = "Verifier"

@@ -1,0 +1,24 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types, configuration and helpers for MyNewsLens"
+license = "AGPL-3.0"
+repository = "https://github.com/your-org/mynewslens"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.7"
+sqlx = { version = "0.6", features = ["macros", "sqlite", "runtime-tokio-rustls"] }
+tokio = { version = "1.28", features = ["macros", "rt-multi-thread", "time"] }
+anyhow = "1.0"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lib]
+name = "common"
+path = "src/lib.rs"

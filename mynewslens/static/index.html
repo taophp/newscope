@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Newscope</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loading-spinner"></div>
+        <p>Loading Newscope...</p>
+    </div>
+
+    <!-- Auth View -->
+    <div id="auth-view" class="view hidden">
+        <div class="auth-container">
+            <div class="auth-header">
+                <h1>Newscope</h1>
+                <p class="tagline">Your AI-Powered News Assistant</p>
+            </div>
+
+            <!-- Login Form -->
+            <div id="login-form" class="auth-card">
+                <h2>Welcome Back</h2>
+                <form id="form-login">
+                    <div class="form-group">
+                        <label for="login-username">Username</label>
+                        <input type="text" id="login-username" required autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label for="login-password">Password</label>
+                        <input type="password" id="login-password" required autocomplete="current-password">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Sign In</button>
+                </form>
+                <p class="auth-toggle">
+                    Don't have an account? <a href="#" id="show-register">Create one</a>
+                </p>
+            </div>
+
+            <!-- Register Form -->
+            <div id="register-form" class="auth-card hidden">
+                <h2>Create Account</h2>
+                <form id="form-register">
+                    <div class="form-group">
+                        <label for="reg-username">Username</label>
+                        <input type="text" id="reg-username" required autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-display">Display Name</label>
+                        <input type="text" id="reg-display" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-password">Password</label>
+                        <input type="password" id="reg-password" required autocomplete="new-password">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Register</button>
+                </form>
+                <p class="auth-toggle">
+                    Already have an account? <a href="#" id="show-login">Sign in</a>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App View -->
+    <div id="app-view" class="view hidden">
+        <div class="app-layout">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <h1>📰 Newscope</h1>
+                    <button id="btn-logout" class="btn-icon" title="Logout">
+                        <span>⎋</span>
+                    </button>
+                </div>
+
+                <!-- Feeds Section -->
+                <section class="sidebar-section">
+                    <h3>Feeds</h3>
+                    <div class="feed-list" id="feed-list">
+                        <p class="empty-state">No feeds yet</p>
+                    </div>
+                    <button id="btn-add-feed" class="btn btn-secondary btn-block">+ Add Feed</button>
+                </section>
+
+                <!-- Sessions Section -->
+                <section class="sidebar-section">
+                    <h3>Sessions</h3>
+                    <button id="btn-new-session" class="btn btn-primary btn-block">+ New Session</button>
+                    <div class="session-list" id="session-list">
+                        <p class="empty-state">No sessions</p>
+                    </div>
+                </section>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="main-content">
+                <!-- Welcome Screen -->
+                <div id="welcome-screen" class="welcome-screen">
+                    <h2>👋 Welcome to Newscope</h2>
+                    <p>Start a new session to chat with your AI news assistant.</p>
+                    <button class="btn btn-primary btn-large" id="btn-welcome-session">Start Session</button>
+                </div>
+
+                <!-- Chat Screen -->
+                <div id="chat-screen" class="chat-screen hidden">
+                    <div class="chat-header">
+                        <div>
+                            <h2 id="chat-title">Session #<span id="chat-session-id">-</span></h2>
+                            <span class="chat-status" id="chat-status">Connected</span>
+                        </div>
+                        <div class="chat-header-right">
+                            <div class="session-timer" id="session-timer">0:00 / 20:00</div>
+                            <button id="btn-close-chat" class="btn-icon">✕</button>
+                        </div>
+                    </div>
+
+                    <!-- Loading Indicator -->
+                    <div id="chat-loading" class="chat-loading hidden">
+                        <div class="loading-spinner"></div>
+                        <p>Generating your personalized press review...</p>
+                    </div>
+
+                    <div class="chat-messages" id="chat-messages">
+                        <!-- Messages will be inserted here -->
+                    </div>
+
+                    <div class="chat-input">
+                        <textarea id="message-input" placeholder="Ask about your news..." rows="1"></textarea>
+                        <button id="btn-send" class="btn btn-primary">Send</button>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Add Feed Modal -->
+    <div id="modal-add-feed" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add Feed</h3>
+                <button class="btn-icon modal-close">✕</button>
+            </div>
+            <form id="form-add-feed">
+                <div class="form-group">
+                    <label for="feed-url">Feed URL</label>
+                    <input type="url" id="feed-url" placeholder="https://example.com/rss" required>
+                </div>
+                <div class="form-group">
+                    <label for="feed-title">Title (optional)</label>
+                    <input type="text" id="feed-title" placeholder="My Feed">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Feed</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- New Session Modal -->
+    <div id="modal-new-session" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>New Session</h3>
+                <button class="btn-icon modal-close">✕</button>
+            </div>
+            <form id="form-new-session">
+                <div class="form-group">
+                    <label for="session-duration">Duration (minutes)</label>
+                    <div class="slider-container">
+                        <input type="range" id="session-duration" min="5" max="60" value="20" step="5">
+                        <span id="duration-value">20</span> minutes
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Start Session</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/chat.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>

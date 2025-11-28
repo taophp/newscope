@@ -1,0 +1,74 @@
+[package]
+name = "newscope"
+version = "0.1.0"
+edition = "2021"
+description = "Single-binary server + worker for MyNewsLens"
+license = "AGPL-3.0"
+repository = "https://github.com/your-org/mynewslens"
+
+[dev-dependencies]
+dotenv = "0.15"
+mockito = "1"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.28", features = ["macros", "rt-multi-thread", "time"] }
+
+# Web framework
+rocket = { version = "0.5", features = ["json", "uuid", "secrets"] }
+rocket_ws = "0.1"
+
+# CLI parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# HTTP client (async)
+reqwest = { version = "0.11", features = ["json", "gzip", "brotli", "rustls-tls"] }
+
+# Feed parsing
+feed-rs = "0.6"
+scraper = "0.17"
+
+# Database
+sqlx = { version = "0.6", features = ["runtime-tokio-rustls", "sqlite", "macros", "chrono"] }
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+toml = "0.7"
+
+# Utilities / errors
+anyhow = "1.0"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Shared workspace crate
+common = { path = "../common" }
+
+# Authentication & security
+# Password hashing (Argon2), random salts
+argon2 = "0.4"
+rand = "0.8"
+
+# JWT support for token-based auth
+jsonwebtoken = "8.2"
+
+# UUIDs for session / user identifiers
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Cookie utilities (if using cookie-based sessions)
+cookie = "0.16"
+html2text = "0.16.4"
+
+[features]
+# Optional features can be added here, e.g.:
+# local-llm = ["llm-local-crate"]
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = true
