@@ -2,9 +2,9 @@
 name = "newscope"
 version = "0.1.0"
 edition = "2021"
-description = "Single-binary server + worker for MyNewsLens"
+description = "Single-binary server + worker for Newscope"
 license = "AGPL-3.0"
-repository = "https://github.com/your-org/mynewslens"
+repository = "https://github.com/taophp/newscope"
 
 [dev-dependencies]
 dotenv = "0.15"

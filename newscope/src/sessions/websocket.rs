@@ -170,7 +170,7 @@ async fn handle_chat_message(
 
     // Build conversation context
     let mut context = String::from(
-        "You are a helpful news assistant for MyNewsLens. \
+        "You are a helpful news assistant for Newscope. \\
          The user is exploring their personalized news feed. \
          Answer questions concisely and help them understand the news.\n\n"
     );

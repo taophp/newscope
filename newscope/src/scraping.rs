@@ -9,7 +9,7 @@ use tracing::{info, warn};
 pub async fn scrape_article_content(url: &str, timeout_secs: u64) -> Result<String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .user_agent("MyNewsLens/0.1.0")
+        .user_agent("Newscope/0.1.0")
         .build()
         .context("failed to build reqwest client")?;
 

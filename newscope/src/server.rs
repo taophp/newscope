@@ -998,7 +998,7 @@ pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>
     .mount("/ws", routes![
         crate::sessions::websocket::chat_websocket,
     ])
-    .mount("/static", FileServer::from("mynewslens/static"));
+    .mount("/static", FileServer::from("newscope/static"));
 
     // Launch Rocket - this will run until shutdown (SIGINT/SIGTERM etc.)
     tracing::info!("Starting Rocket HTTP server");

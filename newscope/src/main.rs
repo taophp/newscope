@@ -1,5 +1,5 @@
 /*
-mynewslens - single-binary main.rs
+newscope - single-binary main.rs
 This binary starts the Rocket HTTP server and runs the background worker inside the same process.
 */
 
@@ -29,7 +29,7 @@ use newscope::processing;
 use server::launch_rocket;
 
 #[derive(Parser, Debug)]
-#[command(name = "mynewslens", about = "MyNewsLens single-binary server + worker")]
+#[command(name = "newscope", about = "Newscope single-binary server + worker")]
 struct Args {
     /// Path to config.toml
     #[arg(long, value_name = "FILE")]

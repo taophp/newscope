@@ -241,6 +241,11 @@ textarea:focus {
     display: grid;
     grid-template-columns: 320px 1fr;
     height: 100vh;
+    /* Fallback */
+    height: 100dvh;
+    /* Mobile-friendly fixed height */
+    overflow: hidden;
+    /* Prevent body scroll */
 }
 
 @media (max-width: 768px) {
@@ -256,6 +261,9 @@ textarea:focus {
     display: flex;
     flex-direction: column;
     overflow-y: auto;
+    /* Internal scroll */
+    height: 100%;
+    /* Explicit height */
 }
 
 .sidebar-header {
@@ -526,6 +534,7 @@ input[type="range"] {
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-secondary);
 }
+
 /* === Session Timer === */
 .chat-header-right {
     display: flex;
@@ -561,9 +570,12 @@ input[type="range"] {
 }
 
 @keyframes pulse-red {
-    0%, 100% {
+
+    0%,
+    100% {
         opacity: 1;
     }
+
     50% {
         opacity: 0.6;
     }

@@ -1,5 +1,5 @@
 /*
- * End-to-end verification binary for MyNewsLens MVP
+ * End-to-end verification binary for Newscope MVP
  * 
  * Replaces verify.py with native Rust implementation
  * 
@@ -28,7 +28,7 @@ const TEST_FEED_URL: &str = "http://rss.cnn.com/rss/edition.rss";
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("\n{}", "=".repeat(60));
-    println!("MyNewsLens End-to-End Verification");
+    println!("Newscope End-to-End Verification");
     println!("{}\n", "=".repeat(60));
 
     // Step 1: Clean database

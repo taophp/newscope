@@ -11,7 +11,7 @@ use std::time::Duration;
 pub async fn fetch_and_parse_feed(url: &str, timeout_secs: u64) -> Result<Feed> {
     let client = Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .user_agent("MyNewsLens/0.1.0")
+        .user_agent("Newscope/0.1.0")
         .build()
         .context("failed to build reqwest client")?;
 

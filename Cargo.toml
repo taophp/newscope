@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "common",
-    "mynewslens",
+    "newscope",
 ]
 
 # Workspace-level settings (optional)

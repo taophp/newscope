@@ -1,6 +1,6 @@
 # Newscope
 
-**Newscope** is a self-hosted, AI-powered personal news assistant. It aggregates RSS feeds, summarizes articles using local or remote LLMs, and provides a conversational interface to explore your news.truggle to keep up with multiple blogs, newsletters, and news sites, and you want a focused, time-boxed way to perform high-quality research or daily/weekly monitoring, MyNewsLens is for you. It aggregates sources you care about, prioritizes and de-duplicates information, and produces concise, actionable summaries that you can read and discuss with an AI assistant — all within the time you choose to spend.
+**Newscope** is a self-hosted, AI-powered personal news assistant. It aggregates RSS feeds, summarizes articles using local or remote LLMs, and provides a conversational interface to explore your news. If you struggle to keep up with multiple blogs, newsletters, and news sites, and you want a focused, time-boxed way to perform high-quality research or daily/weekly monitoring, Newscope is for you. It aggregates sources you care about, prioritizes and de-duplicates information, and produces concise, actionable summaries that you can read and discuss with an AI assistant — all within the time you choose to spend.
 
 License: Affero GPL v3
 
@@ -17,7 +17,7 @@ Who it's for
 - People who prefer a private or self-hosted solution (runs on a Raspberry Pi or x86 host).
 - Privacy-conscious users who favor local LLM options but want the flexibility to use remote models.
 
-What MyNewsLens gives you
+What Newscope gives you
 - Aggregation: collect RSS/OPML feeds and convert site pages to feed-like items when needed.
 - Prioritization: rank items by relevance, novelty, redundancy across feeds, and your learned preferences.
 - Summarization: concise, hierarchical summaries tailored to the time you allocate (e.g., “10 minutes of reading”).
@@ -53,9 +53,9 @@ Files that accompany this README
 (These files live in the repo root; see them for design and contributor guidance.)
 
 Quick usage summary (for evaluation)
-1. Install and configure MyNewsLens (see `docs/SETUP.md` or `SPEC.md`).
+1. Install and configure Newscope (see `docs/SETUP.md` or `SPEC.md`).
 2. Add feeds or import an OPML file.
-3. Run the single MyNewsLens executable (or start via Docker Compose). The executable runs both the web server and the background worker inside the same process and tokio runtime by default. Configuration can be provided via `config.toml` and environment variables.
+3. Run the single Newscope executable (or start via Docker Compose). The executable runs both the web server and the background worker inside the same process and tokio runtime by default. Configuration can be provided via `config.toml` and environment variables.
    - CLI flags exist to control runtime behavior (examples):
      - `--no-worker` : launch only the HTTP server and disable background ingestion tasks.
      - `--worker-only` : run ingestion and worker tasks without binding the HTTP server.
@@ -124,7 +124,7 @@ Getting involved
 3. **Run the server**:
    ```bash
    # Uses config.default.toml + config.toml (if present)
-   cargo run --bin mynewslens
+   cargo run --bin newscope
    ```
 
 4. **Open your browser**: http://localhost:8000
@@ -163,4 +163,4 @@ Note: Pre-configured users without passwords can only be used if you set a passw
 
 ---
 
-Thanks for checking out MyNewsLens — built to make focused, AI-assisted research and daily monitoring simple, private, and time-efficient.
+Thanks for checking out Newscope — built to make focused, AI-assisted research and daily monitoring simple, private, and time-efficient.
