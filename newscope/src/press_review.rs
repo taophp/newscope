@@ -21,10 +21,10 @@ pub struct ScoredArticle {
 }
 
 /// Fetch and score articles based on user preferences
+/// Returns ALL articles with summaries, regardless of publication date
 pub async fn fetch_and_score_articles(
     pool: &SqlitePool,
     user_id: i64,
-    since: DateTime<Utc>,
 ) -> Result<Vec<ScoredArticle>> {
     // 1. Fetch user preferences
     let prefs = sqlx::query(
@@ -46,7 +46,8 @@ pub async fn fetch_and_score_articles(
         }
     }
 
-    // 2. Fetch articles
+    // 2. Fetch articles with summaries (all articles, not just recent ones)
+    // This ensures we don't miss articles from newly added feeds or failed processing
     let rows = sqlx::query(
         r#"
         SELECT 
@@ -64,11 +65,9 @@ pub async fn fetch_and_score_articles(
         JOIN subscriptions sub ON ao.feed_id = sub.feed_id
         JOIN feeds f ON sub.feed_id = f.id
         WHERE sub.user_id = ?
-        AND a.first_seen_at > ?
         "#
     )
     .bind(user_id)
-    .bind(since)
     .fetch_all(pool)
     .await
     .context("Failed to fetch article summaries")?;

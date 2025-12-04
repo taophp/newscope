@@ -5,7 +5,6 @@ use rocket_ws::{Channel, Message, WebSocket};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::{error, info};
-use chrono::Utc;
 
 use crate::llm::{LlmProvider, LlmRequest};
 use super::{get_messages, store_message};
@@ -50,8 +49,8 @@ pub fn chat_websocket(
                                 "content": "👋 Hello! I'm preparing your personalized press review based on new articles..."
                             })).unwrap())).await;
 
-                            // Progressive generation
-                            match crate::press_review::fetch_and_score_articles(&pool, user_id, Utc::now() - chrono::Duration::hours(24)).await {
+                            // Progressive generation - fetch ALL articles with summaries
+                            match crate::press_review::fetch_and_score_articles(&pool, user_id).await {
                                 Ok(articles) => {
                                     if articles.is_empty() {
                                         let msg = "Welcome back! I haven't found any new articles since your last visit.";
