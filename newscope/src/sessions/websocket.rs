@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rocket::request::{FromRequest, Outcome, Request};
 use rocket::{State, get};
 use rocket::futures::{SinkExt, StreamExt};
 use rocket_ws::{Channel, Message, WebSocket};
@@ -11,16 +12,36 @@ use super::{get_messages, store_message};
 
 use serde_json::json;
 
+/// Request guard for Accept-Language header
+pub struct AcceptLanguage(pub String);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for AcceptLanguage {
+    type Error = ();
+
+    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let lang = req.headers()
+            .get_one("Accept-Language")
+            .and_then(|s| s.split(',').next()) // Get first language preference
+            .and_then(|s| s.split('-').next()) // Get primary tag (e.g. "fr" from "fr-FR")
+            .unwrap_or("en")
+            .to_string();
+        Outcome::Success(AcceptLanguage(lang))
+    }
+}
+
 /// WebSocket chat endpoint
 #[get("/chat?<session_id>")]
 pub fn chat_websocket(
     ws: WebSocket,
     session_id: i64,
+    accept_lang: AcceptLanguage,
     state: &State<crate::server::AppState>,
 ) -> Channel<'static> {
     let pool = state.db.clone();
     let llm = state.llm_provider.clone();
     let config = state.config.clone();
+    let language = accept_lang.0;
 
     ws.channel(move |mut stream| {
         Box::pin(async move {
@@ -87,7 +108,15 @@ pub fn chat_websocket(
                                                 "message": format!("Generating review ({}/{})", chunk_idx + 1, total_chunks)
                                             })).unwrap())).await;
                                             let mut prompt = String::new();
-                                            prompt.push_str("You are a personal news editor. Summarize these articles for a quick press review.\n");
+                                            prompt.push_str(&format!("You are a personal news editor. Respond in {}. Summarize these articles for a quick press review.\n", 
+                                                match language.as_str() {
+                                                    "fr" => "French",
+                                                    "es" => "Spanish",
+                                                    "de" => "German",
+                                                    "it" => "Italian",
+                                                    _ => "English"
+                                                }
+                                            ));
                                             prompt.push_str("Group by topic if possible. Be concise and engaging.\n\n");
                                             
                                             for article in chunk {
@@ -269,6 +298,10 @@ async fn handle_chat_message(
          The user is exploring their personalized news feed. \
          Answer questions concisely and help them understand the news.\n\n"
     );
+    
+    // Note: We don't easily have language here without passing it through store_message or similar,
+    // but the system prompt could be updated if we stored language in session.
+    // For now, we rely on the LLM adapting to the user's language in the conversation history.
 
     for msg in messages.iter().rev().take(10).rev() {
         context.push_str(&format!("{}: {}\n", msg.author, msg.message));
