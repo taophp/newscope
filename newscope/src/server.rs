@@ -9,7 +9,9 @@ use rocket::serde::json::Json;
 use rocket::{get, post, routes, State};
 use rocket::fs::FileServer;
 use serde::{Deserialize, Serialize};
+
 use sqlx::{Row, SqlitePool};
+use tracing::error;
 
 use common::Config;
 
@@ -67,6 +69,31 @@ struct FeedCreate {
     title: Option<String>,
 }
 
+/// Job row for API
+#[derive(Serialize, sqlx::FromRow)]
+struct JobRow {
+    id: i64,
+    job_type: String,
+    entity_id: i64,
+    status: String,
+    llm_model: String,
+    created_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    processing_time_ms: Option<i64>,
+    error_message: Option<String>,
+}
+
+/// Stats response
+#[derive(Serialize)]
+struct StatsResponse {
+    articles_processed_24h: i64,
+    total_prompt_tokens: i64,
+    total_completion_tokens: i64,
+    avg_processing_time_ms: f64,
+}
+
 
 use rocket::response::Redirect;
 
@@ -99,6 +126,57 @@ async fn status(state: &State<AppState>) -> Json<StatusResponse> {
         users_count,
         scheduler_times,
     })
+}
+
+/// Get recent processing jobs
+#[get("/api/jobs")]
+async fn list_jobs(state: &State<AppState>) -> std::result::Result<Json<Vec<JobRow>>, Status> {
+    let jobs = sqlx::query_as::<_, JobRow>(
+        "SELECT * FROM processing_jobs ORDER BY created_at DESC LIMIT 50"
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch jobs: {}", e);
+        Status::InternalServerError
+    })?;
+
+    Ok(Json(jobs))
+}
+
+/// Get processing stats
+#[get("/api/stats")]
+async fn get_stats(state: &State<AppState>) -> std::result::Result<Json<StatsResponse>, Status> {
+    let row = sqlx::query(
+        r#"
+        SELECT 
+            COUNT(*) as count, 
+            COALESCE(SUM(prompt_tokens), 0) as prompts, 
+            COALESCE(SUM(completion_tokens), 0) as completions, 
+            COALESCE(AVG(processing_time_ms), 0.0) as avg_time 
+        FROM processing_jobs 
+        WHERE status = 'completed' 
+        AND completed_at > datetime('now', '-24 hours')
+        "#
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch stats: {}", e);
+        Status::InternalServerError
+    })?;
+
+    let count: i64 = row.try_get("count").unwrap_or(0);
+    let prompts: i64 = row.try_get("prompts").unwrap_or(0);
+    let completions: i64 = row.try_get("completions").unwrap_or(0);
+    let avg_time: f64 = row.try_get("avg_time").unwrap_or(0.0);
+
+    Ok(Json(StatsResponse {
+        articles_processed_24h: count,
+        total_prompt_tokens: prompts,
+        total_completion_tokens: completions,
+        avg_processing_time_ms: avg_time,
+    }))
 }
 
 /// List users defined in configuration (safe read-only).
@@ -982,6 +1060,8 @@ pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>
             index_redirect,
             health,
             status,
+            list_jobs,
+            get_stats,
             list_users,
             list_feeds,
             create_feed,

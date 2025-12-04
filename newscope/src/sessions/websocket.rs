@@ -5,6 +5,7 @@ use rocket_ws::{Channel, Message, WebSocket};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::{error, info};
+use chrono::Utc;
 
 use crate::llm::{LlmProvider, LlmRequest};
 use super::{get_messages, store_message};
@@ -49,20 +50,71 @@ pub fn chat_websocket(
                                 "content": "👋 Hello! I'm preparing your personalized press review based on new articles..."
                             })).unwrap())).await;
 
-                            match crate::press_review::generate_press_review(&pool, user_id, llm_provider, &model, duration_seconds).await {
-                                Ok(review) => {
-                                    // Store message
-                                    let _ = crate::sessions::store_message(&pool, session_id, "assistant", &review).await;
-                                    // Send to client
-                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                        "type": "message",
-                                        "content": review
-                                    })).unwrap())).await;
+                            // Progressive generation
+                            match crate::press_review::fetch_and_score_articles(&pool, user_id, Utc::now() - chrono::Duration::hours(24)).await {
+                                Ok(articles) => {
+                                    if articles.is_empty() {
+                                        let msg = "Welcome back! I haven't found any new articles since your last visit.";
+                                        let _ = crate::sessions::store_message(&pool, session_id, "assistant", msg).await;
+                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                            "type": "message",
+                                            "content": msg
+                                        })).unwrap())).await;
+                                    } else {
+                                        let intro = format!("👋 Hello! I found {} relevant articles for you. Let's go through them.", articles.len());
+                                        let _ = crate::sessions::store_message(&pool, session_id, "assistant", &intro).await;
+                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                            "type": "message",
+                                            "content": intro
+                                        })).unwrap())).await;
+
+                                        // Process in chunks of 5
+                                        for chunk in articles.chunks(5) {
+                                            let mut prompt = String::new();
+                                            prompt.push_str("You are a personal news editor. Summarize these articles for a quick press review.\n");
+                                            prompt.push_str("Group by topic if possible. Be concise and engaging.\n\n");
+                                            
+                                            for article in chunk {
+                                                prompt.push_str(&format!("- **{}** (Source: {})\n", article.headline, article.feed_title));
+                                                for bullet in article.bullets.iter().take(2) {
+                                                    prompt.push_str(&format!("  * {}\n", bullet));
+                                                }
+                                                prompt.push_str(&format!("  [Read more]({})\n\n", article.url));
+                                            }
+                                            
+                                            prompt.push_str("\nGenerate a short review section for these:");
+
+                                            match llm_provider.generate(LlmRequest {
+                                                prompt,
+                                                max_tokens: Some(300),
+                                                temperature: Some(0.7),
+                                                timeout_seconds: Some(30),
+                                            }).await {
+                                                Ok(response) => {
+                                                    let content = response.content;
+                                                    let _ = crate::sessions::store_message(&pool, session_id, "assistant", &content).await;
+                                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                        "type": "message",
+                                                        "content": content
+                                                    })).unwrap())).await;
+                                                }
+                                                Err(e) => {
+                                                    error!("Failed to generate chunk review: {}", e);
+                                                }
+                                            }
+                                        }
+                                        
+                                        let outro = "That's all for now! Let me know if you want to explore any topic in depth.";
+                                        let _ = crate::sessions::store_message(&pool, session_id, "assistant", outro).await;
+                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                            "type": "message",
+                                            "content": outro
+                                        })).unwrap())).await;
+                                    }
                                 }
                                 Err(e) => {
-                                    error!("Newscope: Failed to generate press review: {}", e);
-                                    let msg = "I couldn't generate the press review at this time. How can I help you?";
-                                    let _ = crate::sessions::store_message(&pool, session_id, "assistant", msg).await;
+                                    error!("Failed to fetch articles: {}", e);
+                                    let msg = "I'm having trouble accessing the latest news. Please try again later.";
                                     let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                         "type": "message",
                                         "content": msg

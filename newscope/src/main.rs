@@ -103,10 +103,47 @@ async fn main() -> anyhow::Result<()> {
     // Prepare a shutdown notifier to signal worker tasks
     let shutdown_notify = Arc::new(Notify::new());
 
+    // Initialize LLM providers (dual mode: background + interactive)
+    let background_llm: Option<Arc<dyn newscope::llm::LlmProvider>> = if let Some(ref llm_config) = config.llm {
+        match create_llm_provider(llm_config, LlmMode::Background) {
+            Ok(provider) => {
+                info!("Background LLM provider initialized: {:?}", llm_config.background.as_ref()
+                    .or(llm_config.remote.as_ref())
+                    .and_then(|c| c.model.as_deref())
+                    .unwrap_or("unknown"));
+                Some(Arc::from(provider))
+            }
+            Err(e) => {
+                error!("Failed to initialize background LLM provider: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let interactive_llm: Option<Arc<dyn newscope::llm::LlmProvider>> = if let Some(ref llm_config) = config.llm {
+        match create_llm_provider(llm_config, LlmMode::Interactive) {
+            Ok(provider) => {
+                info!("Interactive LLM provider initialized: {:?}", llm_config.interactive.as_ref()
+                    .or(llm_config.remote.as_ref())
+                    .and_then(|c| c.model.as_deref())
+                    .unwrap_or("unknown"));
+                Some(Arc::from(provider))
+            }
+            Err(e) => {
+                error!("Failed to initialize interactive LLM provider: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // If worker_only, run the worker tasks (without HTTP) and exit when shutdown requested
     if args.worker_only {
         info!("Starting in worker-only mode");
-        let worker = run_worker(db_pool.clone(), config.clone(), shutdown_notify.clone());
+        let worker = run_worker(db_pool.clone(), config.clone(), shutdown_notify.clone(), background_llm.clone());
 
         // Wait for CTRL-C or worker completion (worker runs until notified)
         tokio::select! {
@@ -133,8 +170,9 @@ async fn main() -> anyhow::Result<()> {
         let w_db = db_pool.clone();
         let w_cfg = config.clone();
         let w_shutdown = shutdown_notify.clone();
+        let w_llm = background_llm.clone();
         worker_handle = Some(tokio::spawn(async move {
-            if let Err(e) = run_worker(w_db, w_cfg, w_shutdown).await {
+            if let Err(e) = run_worker(w_db, w_cfg, w_shutdown, w_llm).await {
                 error!(%e, "background worker failed");
                 Err(e)
             } else {
@@ -202,17 +240,31 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Helper function to create LLM provider from config
-fn create_llm_provider(llm_config: &common::LlmConfig) -> anyhow::Result<Box<dyn newscope::llm::LlmProvider>> {
+/// LLM mode for selecting appropriate configuration
+#[derive(Debug, Clone, Copy)]
+enum LlmMode {
+    Background,   // For article processing (slow, powerful)
+    Interactive,  // For press review & chat (fast, lightweight)
+}
+
+/// Create an LLM provider based on configuration and mode
+fn create_llm_provider(llm_config: &common::LlmConfig, mode: LlmMode) -> anyhow::Result<Box<dyn newscope::llm::LlmProvider>> {
     let adapter = llm_config.adapter.as_deref().unwrap_or("none");
     match adapter {
         "local" => {
             // Placeholder for local provider
-            // let provider = newscope::llm::local::LocalLlmProvider::new(...)
             anyhow::bail!("Local LLM adapter not yet implemented in main.rs factory")
         }
         "remote" => {
-            if let Some(remote_config) = &llm_config.remote {
+            // Choose config based on mode
+            let endpoint_config = match mode {
+                LlmMode::Background => llm_config.background.as_ref()
+                    .or(llm_config.remote.as_ref()),
+                LlmMode::Interactive => llm_config.interactive.as_ref()
+                    .or(llm_config.remote.as_ref()),
+            };
+
+            if let Some(remote_config) = endpoint_config {
                 // Fetch API key from env var
                 let api_key_env = remote_config.api_key_env.as_deref()
                     .ok_or_else(|| anyhow::anyhow!("Missing api_key_env in remote config"))?;
@@ -222,26 +274,24 @@ fn create_llm_provider(llm_config: &common::LlmConfig) -> anyhow::Result<Box<dyn
                 
                 let model = remote_config.model.clone().unwrap_or_else(|| "gpt-4o-mini".to_string());
                 let api_url = remote_config.api_url.clone().unwrap_or_else(|| "http://localhost:11434/v1/chat/completions".to_string());
+                let timeout_secs = remote_config.timeout_seconds.unwrap_or(30);
+                let max_tokens = remote_config.max_tokens.unwrap_or(500);
 
                 let provider = newscope::llm::remote::RemoteLlmProvider::new(
                     api_url,
                     api_key,
                     model,
                 ).with_defaults(
-                    remote_config.timeout_seconds.unwrap_or(30),
-                    500,
+                    timeout_secs,
+                    max_tokens,
                     0.7,
                 );
                 Ok(Box::new(provider))
             } else {
-                anyhow::bail!("Remote adapter selected but no [llm.remote] config found")
+                anyhow::bail!("Remote adapter selected but no LLM config found for mode {:?}", mode)
             }
         }
         "none" => {
-             // We need a dummy provider or handle Option<Provider>
-             // For now, let's error if strictly required, or return a dummy.
-             // Better: main should handle Option<Box<dyn LlmProvider>>.
-             // But for now, let's just bail or return a dummy if we had one.
              anyhow::bail!("LLM adapter 'none' not supported in this factory yet")
         }
         _ => anyhow::bail!("Unknown LLM adapter type: {}", adapter),
@@ -255,6 +305,7 @@ async fn run_worker(
     _db_pool: Arc<sqlx::SqlitePool>,
     config: Config,
     shutdown_notify: Arc<Notify>,
+    background_llm: Option<Arc<dyn newscope::llm::LlmProvider>>,
 ) -> anyhow::Result<()> {
     info!(
         "worker: initializing scheduler with times: {:?}",
@@ -264,18 +315,6 @@ async fn run_worker(
     // Example: convert times to a vector for scheduling; real implementation should parse times
     // and schedule ingestion windows precisely at wall-clock times.
     // Placeholder loop: tick every hour and respond to shutdown.
-    // Initialize LLM provider if configured
-    let llm_provider: Option<std::sync::Arc<dyn newscope::llm::LlmProvider>> = if let Some(ref llm_config) = config.llm {
-        match create_llm_provider(llm_config) {
-            Ok(p) => Some(Arc::from(p)),
-            Err(e) => {
-                error!("Failed to initialize LLM provider for worker: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     loop {
         info!("worker: checking for feeds to update");
@@ -320,7 +359,7 @@ async fn run_worker(
                                         // 3. Process new articles with LLM if configured
                                         if !article_ids.is_empty() {
                                             new_items_found = true;
-                                            if let Some(provider) = &llm_provider {
+                                            if let Some(provider) = &background_llm {
                                                 info!("Processing {} new articles with LLM...", article_ids.len());
                                                 // Spawn processing in background or run here?
                                                 // For simplicity in this worker loop, we await it, but we might want to spawn it.

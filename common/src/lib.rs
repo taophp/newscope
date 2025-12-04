@@ -54,6 +54,7 @@ pub struct RemoteLlmConfig {
     pub api_key_env: Option<String>,
     pub model: Option<String>,
     pub timeout_seconds: Option<u64>,
+    pub max_tokens: Option<usize>,
 }
 
 /// LLM top-level config grouping local/remote specifics
@@ -61,7 +62,11 @@ pub struct RemoteLlmConfig {
 pub struct LlmConfig {
     pub adapter: Option<String>, // "local", "remote", "none"
     pub local: Option<LocalLlmConfig>,
+    // Backward compatibility: single remote config
     pub remote: Option<RemoteLlmConfig>,
+    // New: separate configs for background and interactive
+    pub background: Option<RemoteLlmConfig>,
+    pub interactive: Option<RemoteLlmConfig>,
 }
 
 /// Simple feed descriptor used in per-user initial feed lists
