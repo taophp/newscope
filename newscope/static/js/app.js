@@ -309,7 +309,7 @@ const App = {
         } else if (data.type === 'message' && data.content) {
             // Hide progress and show new message from server
             this.hideProgress();
-            this.addMessage('assistant', data.content);
+            this.addMessage('assistant', data.content, data.sources || null);
         } else if (data.type === 'history') {
             // Chat history replay
             this.addMessage(data.role === 'user' ? 'user' : 'assistant', data.content);
@@ -332,7 +332,7 @@ const App = {
         indicator.classList.add('hidden');
     },
 
-    addMessage(author, text) {
+    addMessage(author, text, sources = null) {
         const container = document.getElementById('chat-messages');
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${author}`;
@@ -347,13 +347,64 @@ const App = {
             content = this.escapeHtml(text);
         }
 
+        // Add sources if present
+        let sourcesHtml = '';
+        if (sources && sources.length > 0) {
+            sourcesHtml = this.renderSources(sources);
+        }
+
         messageDiv.innerHTML = `
             <div class="avatar">${avatar}</div>
-            <div class="message-content">${content}</div>
+            <div class="message-content">
+                ${content}
+                ${sourcesHtml}
+            </div>
         `;
 
         container.appendChild(messageDiv);
         container.scrollTop = container.scrollHeight;
+    },
+
+    renderSources(sources) {
+        // Sort by score (relevance)
+        sources.sort((a, b) => b.score - a.score);
+
+        return `
+            <div class="sources-container">
+                <div class="sources-label">Sources:</div>
+                <div class="sources-list">
+                    ${sources.map(s => {
+            const domain = this.extractDomain(s.url);
+            const faviconUrl = `${domain}/favicon.ico`;
+            return `
+                            <a href="${s.url}" target="_blank" rel="noopener noreferrer" class="source-item">
+                                <img src="${faviconUrl}" 
+                                     alt="" 
+                                     class="source-icon" 
+                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
+                                <span class="source-icon-fallback" style="display:none;">📰</span>
+                                <span class="source-title">${this.truncate(s.title, 40)}</span>
+                            </a>
+                        `;
+        }).join('')}
+                </div>
+            </div>
+        `;
+    },
+
+    extractDomain(url) {
+        try {
+            const urlObj = new URL(url);
+            return `${urlObj.protocol}//${urlObj.hostname}`;
+        } catch {
+            return '';
+        }
+    },
+
+    truncate(text, maxLength) {
+        return text.length > maxLength
+            ? text.substring(0, maxLength) + '...'
+            : text;
     },
 
     updateChatStatus(status) {

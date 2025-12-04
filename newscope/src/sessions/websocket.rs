@@ -108,29 +108,44 @@ pub fn chat_websocket(
                                             }).await {
                                                 Ok(response) => {
                                                     let content = response.content;
+                                                    
+                                                    // Prepare sources for this chunk
+                                                    let sources: Vec<serde_json::Value> = chunk.iter().map(|article| {
+                                                        json!({
+                                                            "url": article.url,
+                                                            "title": article.article_title,
+                                                            "feed_title": article.feed_title,
+                                                            "score": article.score
+                                                        })
+                                                    }).collect();
+                                                    
                                                     let _ = crate::sessions::store_message(&pool, session_id, "assistant", &content).await;
                                                     let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                                         "type": "message",
-                                                        "content": content
+                                                        "content": content,
+                                                        "sources": sources
                                                     })).unwrap())).await;
+
+                                                    // Mark articles in this chunk as viewed ONLY if generation succeeded
+                                                    for article in chunk {
+                                                        let _ = sqlx::query(
+                                                            "INSERT OR IGNORE INTO user_article_views (user_id, article_id, session_id) VALUES (?, ?, ?)"
+                                                        )
+                                                        .bind(user_id)
+                                                        .bind(article.id)
+                                                        .bind(session_id)
+                                                        .execute(&pool)
+                                                        .await;
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     error!("Failed to generate chunk review: {}", e);
+                                                    // Do NOT mark as viewed so they can be retried later
                                                 }
                                             }
                                         }
                                         
-                                        // Mark all presented articles as viewed
-                                        for article in &articles {
-                                            let _ = sqlx::query(
-                                                "INSERT OR IGNORE INTO user_article_views (user_id, article_id, session_id) VALUES (?, ?, ?)"
-                                            )
-                                            .bind(user_id)
-                                            .bind(article.id)
-                                            .bind(session_id)
-                                            .execute(&pool)
-                                            .await;
-                                        }
+
                                         
                                         let outro = "That's all for now! Let me know if you want to explore any topic in depth.";
                                         let _ = crate::sessions::store_message(&pool, session_id, "assistant", outro).await;
