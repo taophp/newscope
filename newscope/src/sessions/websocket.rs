@@ -49,6 +49,12 @@ pub fn chat_websocket(
                                 "content": "👋 Hello! I'm preparing your personalized press review based on new articles..."
                             })).unwrap())).await;
 
+                            // Send initial progress
+                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                "type": "progress",
+                                "message": "Fetching your articles..."
+                            })).unwrap())).await;
+
                             // Progressive generation - fetch ALL articles with summaries
                             match crate::press_review::fetch_and_score_articles(&pool, user_id).await {
                                 Ok(articles) => {
@@ -67,8 +73,19 @@ pub fn chat_websocket(
                                             "content": intro
                                         })).unwrap())).await;
 
+                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                            "type": "progress",
+                                            "message": format!("Analyzing {} articles...", articles.len())
+                                        })).unwrap())).await;
+
                                         // Process in chunks of 5
-                                        for chunk in articles.chunks(5) {
+                                        let total_chunks = (articles.len() + 4) / 5;
+                                        for (chunk_idx, chunk) in articles.chunks(5).enumerate() {
+                                            // Send progress for this chunk
+                                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                "type": "progress",
+                                                "message": format!("Generating review ({}/{})", chunk_idx + 1, total_chunks)
+                                            })).unwrap())).await;
                                             let mut prompt = String::new();
                                             prompt.push_str("You are a personal news editor. Summarize these articles for a quick press review.\n");
                                             prompt.push_str("Group by topic if possible. Be concise and engaging.\n\n");

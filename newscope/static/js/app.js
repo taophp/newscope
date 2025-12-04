@@ -303,16 +303,33 @@ const App = {
 
     handleChatMessage(data) {
         // Handle different message types from WebSocket
-        if (data.type === 'message' && data.content) {
-            // New message from server
+        if (data.type === 'progress') {
+            // Show progress indicator with status message
+            this.updateProgress(data.message || 'Processing...');
+        } else if (data.type === 'message' && data.content) {
+            // Hide progress and show new message from server
+            this.hideProgress();
             this.addMessage('assistant', data.content);
         } else if (data.type === 'history') {
             // Chat history replay
             this.addMessage(data.role === 'user' ? 'user' : 'assistant', data.content);
         } else if (data.type === 'message' && data.author === 'assistant' && data.message) {
             // Legacy format support
+            this.hideProgress();
             this.addMessage('assistant', data.message);
         }
+    },
+
+    updateProgress(message) {
+        const indicator = document.getElementById('progress-indicator');
+        const details = indicator.querySelector('.progress-details');
+        indicator.classList.remove('hidden');
+        details.textContent = message;
+    },
+
+    hideProgress() {
+        const indicator = document.getElementById('progress-indicator');
+        indicator.classList.add('hidden');
     },
 
     addMessage(author, text) {
