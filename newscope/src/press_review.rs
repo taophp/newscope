@@ -48,6 +48,7 @@ pub async fn fetch_and_score_articles(
 
     // 2. Fetch articles with summaries (all articles, not just recent ones)
     // This ensures we don't miss articles from newly added feeds or failed processing
+    // BUT we exclude articles the user has already seen
     let rows = sqlx::query(
         r#"
         SELECT 
@@ -64,9 +65,12 @@ pub async fn fetch_and_score_articles(
         JOIN article_occurrences ao ON a.id = ao.article_id
         JOIN subscriptions sub ON ao.feed_id = sub.feed_id
         JOIN feeds f ON sub.feed_id = f.id
+        LEFT JOIN user_article_views uav ON uav.user_id = ? AND uav.article_id = a.id
         WHERE sub.user_id = ?
+        AND uav.id IS NULL  -- Exclude articles already viewed
         "#
     )
+    .bind(user_id)
     .bind(user_id)
     .fetch_all(pool)
     .await

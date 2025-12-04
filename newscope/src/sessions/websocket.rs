@@ -103,6 +103,18 @@ pub fn chat_websocket(
                                             }
                                         }
                                         
+                                        // Mark all presented articles as viewed
+                                        for article in &articles {
+                                            let _ = sqlx::query(
+                                                "INSERT OR IGNORE INTO user_article_views (user_id, article_id, session_id) VALUES (?, ?, ?)"
+                                            )
+                                            .bind(user_id)
+                                            .bind(article.id)
+                                            .bind(session_id)
+                                            .execute(&pool)
+                                            .await;
+                                        }
+                                        
                                         let outro = "That's all for now! Let me know if you want to explore any topic in depth.";
                                         let _ = crate::sessions::store_message(&pool, session_id, "assistant", outro).await;
                                         let _ = stream.send(Message::Text(serde_json::to_string(&json!({
