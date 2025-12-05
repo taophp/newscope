@@ -169,7 +169,11 @@ pub fn chat_websocket(
                                                 }
                                                 Err(e) => {
                                                     error!("Failed to generate chunk review: {}", e);
-                                                    // Do NOT mark as viewed so they can be retried later
+                                                    // Inform user of error so progress indicator is hidden
+                                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                        "type": "message",
+                                                        "content": "I apologize, but I encountered an error while generating the review for this section. Please check the server logs or try again later."
+                                                    })).unwrap())).await;
                                                 }
                                             }
                                         }

@@ -78,6 +78,7 @@ struct JobRow {
     status: String,
     llm_model: String,
     created_at: DateTime<Utc>,
+    started_at: Option<DateTime<Utc>>,
     completed_at: Option<DateTime<Utc>>,
     prompt_tokens: i64,
     completion_tokens: i64,
