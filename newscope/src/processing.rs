@@ -245,6 +245,32 @@ async fn process_single_article(
         .execute(pool)
         .await?;
         
+        // 4. Personalize for all active users (Phase 8: NEW!)
+        info!("Starting personalization for article {} for active users", article_id);
+        match crate::personalize_worker::personalize_for_users(
+            pool,
+            article_id,
+            &summary,
+            llm_provider.clone(),
+            model,
+        )
+        .await
+        {
+            Ok(count) => {
+                info!(
+                    "Successfully personalized article {} for {} users",
+                    article_id, count
+                );
+            }
+            Err(e) => {
+                // Don't fail the whole job if personalization fails
+                warn!(
+                    "Failed to personalize article {} for users: {}",
+                    article_id, e
+                );
+            }
+        }
+        
         Ok::<_, anyhow::Error>((summary.usage.prompt_tokens, summary.usage.completion_tokens))
     }.await;
 
