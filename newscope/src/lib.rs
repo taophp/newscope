@@ -9,3 +9,4 @@ pub mod sessions;
 pub mod server;
 pub mod processing;
 pub mod press_review;
+pub mod personalization;

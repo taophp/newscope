@@ -26,6 +26,7 @@ use newscope::llm;
 use newscope::ingestion;
 use newscope::storage;
 use newscope::processing;
+use newscope::personalization;
 use server::launch_rocket;
 
 #[derive(Parser, Debug)]
