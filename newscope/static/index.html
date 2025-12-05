@@ -92,6 +92,7 @@
                         <p class="empty-state">No feeds yet</p>
                     </div>
                     <button id="btn-add-feed" class="btn btn-secondary btn-block">+ Add Feed</button>
+                    <button id="btn-import-opds" class="btn btn-secondary btn-block">📁 Import OPML</button>
                 </section>
 
                 <!-- Sessions Section -->
@@ -193,7 +194,59 @@
     </div>
 
     <script src="/static/js/api.js"></script>
+    <!-- OPDS Import Modal -->
+    <div id="opds-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Import OPML File</h2>
+                <button class="modal-close" onclick="closeOPDSModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Select an OPML file (XML format) to import RSS/Atom feeds:</p>
+                <input type="file" id="opds-file-input" accept=".xml,.opml" />
+
+                <!-- Progress indicator -->
+                <div id="opds-progress" class="progress-indicator hidden">
+                    <div class="progress-spinner"></div>
+                    <div class="progress-text">Importing feeds...</div>
+                    <div class="progress-details" id="opds-progress-details"></div>
+                </div>
+
+                <!-- Results -->
+                <div id="opds-results" class="opds-results hidden">
+                    <h3>Import Complete</h3>
+                    <div class="opds-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">Added:</span>
+                            <span class="stat-value" id="opds-stats-added">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Duplicates:</span>
+                            <span class="stat-value" id="opds-stats-duplicates">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Errors:</span>
+                            <span class="stat-value" id="opds-stats-errors">0</span>
+                        </div>
+                    </div>
+                    <div id="opds-error-list" class="error-list hidden"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-opds-import" class="btn btn-primary">Import</button>
+                <button class="btn btn-secondary" onclick="closeOPDSModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/js/chat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        // Global helper for modal close buttons
+        function closeOPDSModal() {
+            document.getElementById('opds-modal').classList.add('hidden');
+        }
+    </script>
     <script src="/static/js/app.js"></script>
 </body>
 

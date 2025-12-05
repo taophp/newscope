@@ -703,3 +703,68 @@ input[type="range"] {
     text-overflow: ellipsis;
     max-width: 200px;
 }
+
+/* === OPDS Import Modal === */
+.opds-results {
+    margin-top: var(--space-lg);
+    padding: var(--space-md);
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+}
+
+.opds-results h3 {
+    margin-top: 0;
+    margin-bottom: var(--space-md);
+    color: var(--success);
+}
+
+.opds-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+}
+
+.stat-item {
+    text-align: center;
+    padding: var(--space-sm);
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+.stat-label {
+    display: block;
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-xs);
+}
+
+.stat-value {
+    display: block;
+    font-size: 1.5em;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.error-list {
+    margin-top: var(--space-md);
+    padding: var(--space-md);
+    background: var(--error-bg, #fee);
+    border-radius: var(--radius);
+}
+
+.error-list h4 {
+    margin-top: 0;
+    color: var(--error);
+}
+
+.error-list ul {
+    margin: 0;
+    padding-left: var(--space-lg);
+}
+
+.error-list li {
+    color: var(--error);
+    margin-bottom: var(--space-xs);
+}

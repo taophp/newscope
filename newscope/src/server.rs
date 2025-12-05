@@ -9,6 +9,7 @@ use rocket::serde::json::Json;
 use rocket::{get, post, routes, State};
 use rocket::fs::FileServer;
 use serde::{Deserialize, Serialize};
+use rocket::data::{Data, ToByteUnit};
 
 use sqlx::{Row, SqlitePool};
 use tracing::error;
@@ -67,6 +68,15 @@ struct FeedCreate {
     token: Option<String>,
     url: String,
     title: Option<String>,
+}
+
+/// Response for OPDS import
+#[derive(Serialize)]
+struct OpdsImportResponse {
+    added: usize,
+    duplicates: usize,
+    errors: Vec<String>,
+    total_processed: usize,
 }
 
 /// Job row for API
@@ -404,9 +414,18 @@ async fn login(
     }
 }
 
-/// Create a new feed in the database.
-/// Accepts either `user_id` in the JSON body or a `token` (JWT) in the JSON body;
-/// the token's `sub` claim will be used as the user id. If both are present the
+/// Auto-extract feed title by fetching and parsing the feed
+async fn auto_extract_feed_title(url: &str) -> Option<String> {
+    match crate::ingestion::fetch_and_parse_feed(url, 10).await {
+        Ok(feed) => feed.title.map(|t| t.content),
+        Err(e) => {
+            tracing::warn!("Failed to auto-extract title from {}: {}", url, e);
+            None
+        }
+    }
+}
+
+/// Create a new feed and subscribe to it. If token is provided in body, it will be used to identify user;
 /// explicit `user_id` takes precedence.
 #[post("/api/v1/feeds", data = "<body>")]
 async fn create_feed(
@@ -473,10 +492,16 @@ async fn create_feed(
     let feed_id = if let Some(id) = feed_id_opt {
         id
     } else {
+        // Determine title: use provided, or auto-extract from feed
+        let title = match body.title.as_deref() {
+            Some(t) if !t.is_empty() => Some(t.to_string()),
+            _ => auto_extract_feed_title(&body.url).await,
+        };
+        
         // Create new feed with next_poll_at = NULL to trigger immediate polling
         let res = sqlx::query("INSERT INTO feeds (url, title, next_poll_at) VALUES (?, ?, NULL)")
             .bind(&body.url)
-            .bind(body.title.as_deref()) // Initial title from first user
+            .bind(title.as_deref())
             .execute(pool)
             .await
             .map_err(|e| {
@@ -516,6 +541,159 @@ async fn create_feed(
 
     let sub_id = res.last_insert_rowid();
     Ok(Json(serde_json::json!({ "id": feed_id, "subscription_id": sub_id })))
+}
+
+/// Import feeds from OPML file
+#[post("/api/v1/feeds/import/opml?<user_id>", data = "<data>")]
+async fn import_opds(
+    state: &State<AppState>,
+    user_id: i64,
+    data: Data<'_>,
+) -> Result<Json<OpdsImportResponse>, Status> {
+    let pool = &state.db;
+
+    // Read uploaded file (limit to 10MB)
+    let bytes = data.open(10.megabytes())
+        .into_bytes()
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to read upload: {}", e);
+            Status::BadRequest
+        })?;
+
+    if !bytes.is_complete() {
+        tracing::error!("Upload too large");
+        return Err(Status::PayloadTooLarge);
+    }
+
+    let content = bytes.into_inner();
+    
+    // Parse OPML using quick-xml
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_reader(&content[..]);
+    reader.trim_text(true);
+
+    let mut added = 0;
+    let mut duplicates = 0;
+    let mut errors = Vec::new();
+
+    // Parse <outline> elements
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(e)) if e.name().as_ref() == b"outline" => {
+                // Extract attributes
+                let mut xml_url: Option<String> = None;
+                let mut title: Option<String> = None;
+
+                for attr in e.attributes() {
+                    if let Ok(attr) = attr {
+                        match attr.key.as_ref() {
+                            b"xmlUrl" => {
+                                xml_url = String::from_utf8(attr.value.to_vec()).ok();
+                            }
+                            b"text" | b"title" => {
+                                if title.is_none() {
+                                    title = String::from_utf8(attr.value.to_vec()).ok();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Process feed if xmlUrl found
+                if let Some(url) = xml_url {
+                    // Auto-extract title if not in OPML
+                    let final_title = match title {
+                        Some(t) if !t.is_empty() => Some(t),
+                        _ => auto_extract_feed_title(&url).await,
+                    };
+
+                    // Check if feed exists
+                    match sqlx::query_scalar::<_, i64>("SELECT id FROM feeds WHERE url = ?")
+                        .bind(&url)
+                        .fetch_optional(pool)
+                        .await
+                    {
+                        Ok(feed_id_opt) => {
+                            let feed_id = if let Some(id) = feed_id_opt {
+                                id
+                            } else {
+                                // Create new feed
+                                match sqlx::query("INSERT INTO feeds (url, title, next_poll_at) VALUES (?, ?, NULL)")
+                                    .bind(&url)
+                                    .bind(final_title.as_deref())
+                                    .execute(pool)
+                                    .await
+                                {
+                                    Ok(res) => res.last_insert_rowid(),
+                                    Err(e) => {
+                                        errors.push(format!("Failed to create feed {}: {}", url, e));
+                                        continue;
+                                    }
+                                }
+                            };
+
+                            // Create subscription if not exists
+                            match sqlx::query_scalar::<_, i64>(
+                                "SELECT id FROM subscriptions WHERE user_id = ? AND feed_id = ?"
+                            )
+                                .bind(user_id)
+                                .bind(feed_id)
+                                .fetch_optional(pool)
+                                .await
+                            {
+                                Ok(Some(_)) => {
+                                    duplicates += 1;
+                                }
+                                Ok(None) => {
+                                    // Add subscription
+                                    match sqlx::query(
+                                        "INSERT INTO subscriptions (user_id, feed_id, title) VALUES (?, ?, ?)"
+                                    )
+                                        .bind(user_id)
+                                        .bind(feed_id)
+                                        .bind(final_title.as_deref())
+                                        .execute(pool)
+                                        .await
+                                    {
+                                        Ok(_) => added += 1,
+                                        Err(e) => {
+                                            errors.push(format!("Failed to subscribe to {}: {}", url, e));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    errors.push(format!("DB error checking subscription for {}: {}", url, e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("DB error checking feed {}: {}", url, e));
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                errors.push(format!("XML parse error: {}", e));
+                break;
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    let errors_count = errors.len();
+    Ok(Json(OpdsImportResponse {
+        added,
+        duplicates,
+        errors,
+        total_processed: added + duplicates + errors_count,
+    }))
 }
 
 /// Minimal fetch trigger for a feed: enqueues a background task that will perform the fetch.
@@ -1066,6 +1244,7 @@ pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>
             list_users,
             list_feeds,
             create_feed,
+            import_opds,
             trigger_fetch,
             process_pending,
             register,

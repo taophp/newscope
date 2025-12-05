@@ -73,6 +73,10 @@ const App = {
                 this.sendMessage();
             }
         });
+
+        // OPDS Import
+        document.getElementById('btn-import-opds').addEventListener('click', () => this.openOPDSModal());
+        document.getElementById('btn-opds-import').addEventListener('click', () => this.handleOPDSImport());
     },
 
     showAuth() {
@@ -425,6 +429,77 @@ const App = {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    },
+
+    openOPDSModal() {
+        // Reset modal state
+        document.getElementById('opds-file-input').value = '';
+        document.getElementById('opds-progress').classList.add('hidden');
+        document.getElementById('opds-results').classList.add('hidden');
+        document.getElementById('opds-modal').classList.remove('hidden');
+    },
+
+    async handleOPDSImport() {
+        const fileInput = document.getElementById('opds-file-input');
+        const file = fileInput.files[0];
+
+        if (!file) {
+            alert('Please select an OPDS file');
+            return;
+        }
+
+        // Show progress indicator
+        document.getElementById('opds-progress').classList.remove('hidden');
+        document.getElementById('opds-results').classList.add('hidden');
+        document.getElementById('opds-progress-details').textContent = `Uploading ${file.name}...`;
+
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const response = await fetch(`/api/v1/feeds/import/opml?user_id=${this.currentUser.id}`, {
+                method: 'POST',
+                body: file, // Send raw file data
+            });
+
+            if (!response.ok) {
+                throw new Error(`Import failed: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+
+            // Hide progress, show results
+            document.getElementById('opds-progress').classList.add('hidden');
+            document.getElementById('opds-results').classList.remove('hidden');
+
+            // Update stats
+            document.getElementById('opds-stats-added').textContent = result.added;
+            document.getElementById('opds-stats-duplicates').textContent = result.duplicates;
+            document.getElementById('opds-stats-errors').textContent = result.errors.length;
+
+            // Show errors if any
+            const errorList = document.getElementById('opds-error-list');
+            if (result.errors.length > 0) {
+                errorList.classList.remove('hidden');
+                errorList.innerHTML = '<h4>Errors:</h4><ul>' +
+                    result.errors.map(e => `<li>${this.escapeHtml(e)}</li>`).join('') +
+                    '</ul>';
+            } else {
+                errorList.classList.add('hidden');
+            }
+
+            // Refresh feed list if any feeds were added
+            if (result.added > 0) {
+                setTimeout(() => {
+                    this.loadFeeds();
+                }, 1000);
+            }
+
+        } catch (error) {
+            console.error('OPDS import error:', error);
+            document.getElementById('opds-progress').classList.add('hidden');
+            alert(`Import failed: ${error.message}`);
+        }
     }
 };
 
