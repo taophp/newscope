@@ -90,11 +90,13 @@ pub fn chat_websocket(
                                     f.title as feed_title
                                  FROM user_article_summaries uas
                                  JOIN articles a ON uas.article_id = a.id
-                                 JOIN feeds f ON a.feed_id = f.id
+                                 LEFT JOIN article_occurrences ao ON a.id = ao.article_id
+                                 LEFT JOIN feeds f ON ao.feed_id = f.id
                                  LEFT JOIN user_article_views uav ON uas.user_id = uav.user_id AND uas.article_id = uav.article_id
                                  WHERE uas.user_id = ?
                                    AND uas.is_relevant = 1
                                    AND uav.id IS NULL
+                                 GROUP BY uas.article_id
                                  ORDER BY uas.relevance_score DESC, a.first_seen_at DESC
                                  LIMIT ?"
                             )
@@ -238,7 +240,7 @@ Create a well-structured, engaging briefing.",
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to fetch articles: {}", e);
+                                    error!("Failed to fetch personalized articles for user {}: {:?}", user_id, e);
                                     let msg = "I'm having trouble accessing the latest news. Please try again later.";
                                     let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                         "type": "message",
