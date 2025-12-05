@@ -185,7 +185,7 @@ Create a well-structured, engaging briefing.",
                                             prompt: synthesis_prompt,
                                             max_tokens: Some((reading_minutes * 150) as usize),
                                             temperature: Some(0.7),
-                                            timeout_seconds: Some(30),
+                                            timeout_seconds: Some(120),
                                         }).await {
                                             Ok(response) => {
                                                 let _ = crate::sessions::store_message(&pool, session_id, "assistant", &response.content).await;
