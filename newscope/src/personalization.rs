@@ -219,9 +219,7 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
             u.id,
             COALESCE(up.language, 'en') as language,
             COALESCE(up.complexity_level, 'medium') as complexity_level,
-            up.interests,
-            up.preferred_categories,
-            up.keyword_boosts
+            up.interests
          FROM users u
          LEFT JOIN user_preferences up ON u.id = up.user_id
          WHERE u.id = ?"
@@ -242,17 +240,10 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let preferred_categories: Vec<String> = row
-        .try_get::<String, _>("preferred_categories")
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-
-    let keyword_boosts: std::collections::HashMap<String, f32> = row
-        .try_get::<String, _>("keyword_boosts")
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    // preferred_categories and keyword_boosts don't exist in schema yet
+    // Using empty defaults for now
+    let preferred_categories: Vec<String> = Vec::new();
+    let keyword_boosts: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
 
     Ok(UserProfile {
         id,

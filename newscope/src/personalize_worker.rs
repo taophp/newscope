@@ -17,6 +17,7 @@ pub async fn personalize_for_users(
     model: &str,
 ) -> Result<usize> {
     // Get all active users with preferences (those who have language set)
+    info!("Fetching users with preferences for article personalization");
     let users = sqlx::query(
         "SELECT DISTINCT u.id 
          FROM users u 
@@ -26,6 +27,8 @@ pub async fn personalize_for_users(
     .fetch_all(pool)
     .await
     .context("Failed to fetch active users")?;
+
+    info!("Found {} users with preferences for personalization", users.len());
 
     if users.is_empty() {
         info!("No active users to personalize for");
