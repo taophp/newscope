@@ -73,108 +73,157 @@ pub fn chat_websocket(
                             // Send initial progress
                             let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                 "type": "progress",
-                                "message": "Fetching your articles..."
+                                "message": "Fetching your personalized articles..."
                             })).unwrap())).await;
 
-                            // Progressive generation - fetch ALL articles with summaries
-                            match crate::press_review::fetch_and_score_articles(&pool, user_id).await {
+                            // PHASE 3: Fetch PRE-COMPUTED personalized summaries
+                            let reading_minutes = duration_seconds / 120; // 50% for reading (divide by 2, then convert to minutes)
+                            let estimated_articles = (reading_minutes * 3).min(50); // ~3 articles/min reading, max 50
+
+                            match sqlx::query(
+                                "SELECT 
+                                    uas.article_id,
+                                    uas.personalized_headline,
+                                    uas.personalized_bullets,
+                                    uas.relevance_score,
+                                    a.canonical_url,
+                                    f.title as feed_title
+                                 FROM user_article_summaries uas
+                                 JOIN articles a ON uas.article_id = a.id
+                                 JOIN feeds f ON a.feed_id = f.id
+                                 LEFT JOIN user_article_views uav ON uas.user_id = uav.user_id AND uas.article_id = uav.article_id
+                                 WHERE uas.user_id = ?
+                                   AND uas.is_relevant = 1
+                                   AND uav.id IS NULL
+                                 ORDER BY uas.relevance_score DESC, a.first_seen_at DESC
+                                 LIMIT ?"
+                            )
+                            .bind(user_id)
+                            .bind(estimated_articles)
+                            .fetch_all(&pool)
+                            .await
+                            {
                                 Ok(articles) => {
                                     if articles.is_empty() {
-                                        let msg = "Welcome back! I haven't found any new articles since your last visit.";
+                                        let msg = "Welcome back! Your personalized articles are still being processed. Please check back in a few minutes.";
                                         let _ = crate::sessions::store_message(&pool, session_id, "assistant", msg).await;
                                         let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                             "type": "message",
                                             "content": msg
                                         })).unwrap())).await;
                                     } else {
-                                        let intro = format!("👋 Hello! I found {} relevant articles for you. Let's go through them.", articles.len());
-                                        let _ = crate::sessions::store_message(&pool, session_id, "assistant", &intro).await;
+                                        // Hide progress indicator
                                         let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                            "type": "message",
-                                            "content": intro
+                                            "type": "progress_hide"
                                         })).unwrap())).await;
 
-                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                            "type": "progress",
-                                            "message": format!("Analyzing {} articles...", articles.len())
-                                        })).unwrap())).await;
+                                        // Extract article data from rows
+                                        use sqlx::Row;
+                                        let article_data: Vec<(i64, String, String, f64, String, Option<String>)> = articles.iter()
+                                            .map(|row| {
+                                                let article_id: i64 = row.get("article_id");
+                                                let headline: String = row.get("personalized_headline");
+                                                let bullets: String = row.get("personalized_bullets");
+                                                let relevance: f64 = row.get("relevance_score");
+                                                let url: String = row.get("canonical_url");
+                                                let feed_title: Option<String> = row.try_get("feed_title").ok();
+                                                (article_id, headline, bullets, relevance, url, feed_title)
+                                            })
+                                            .collect();
 
-                                        // Process in chunks of 5
-                                        let total_chunks = (articles.len() + 4) / 5;
-                                        for (chunk_idx, chunk) in articles.chunks(5).enumerate() {
-                                            // Send progress for this chunk
-                                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                "type": "progress",
-                                                "message": format!("Generating review ({}/{})", chunk_idx + 1, total_chunks)
-                                            })).unwrap())).await;
-                                            let mut prompt = String::new();
-                                            prompt.push_str(&format!("You are a personal news editor. Respond in {}. Summarize these articles for a quick press review.\n", 
-                                                match language.as_str() {
-                                                    "fr" => "French",
-                                                    "es" => "Spanish",
-                                                    "de" => "German",
-                                                    "it" => "Italian",
-                                                    _ => "English"
+                                        // Build context from pre-computed summaries
+                                        let articles_context: Vec<String> = article_data.iter()
+                                            .map(|(_, headline, bullets_json, relevance, _, feed_title)| {
+                                                let bullets: Vec<String> = serde_json::from_str(bullets_json).unwrap_or_default();
+                                                format!(
+                                                    "**{}**\nSource: {}\nRelevance: {:.2}\nPoints:\n- {}",
+                                                    headline,
+                                                    feed_title.as_deref().unwrap_or("Unknown"),
+                                                    relevance,
+                                                    bullets.join("\n- ")
+                                                )
+                                            })
+                                            .collect();
+
+                                        let context_text = articles_context.join("\n\n---\n\n");
+
+                                        // LIGHTWEIGHT LLM TASK: Create narrative synthesis
+                                        let synthesis_prompt = format!(
+                                            "You are creating a personalized news briefing for a {} minute session.
+
+The user has {} minutes for reading. Create a cohesive narrative synthesis highlighting the most important themes and stories from these {} pre-selected articles:
+
+{}
+
+Instructions:
+1. Respond in {} (important!)
+2. Identify 2-3 major themes connecting these stories
+3. Create a compelling introduction highlighting what's most important
+4. Group related stories together with smooth transitions
+5. Keep the synthesis engaging and conversational
+6. Total length should fit ~{} minutes of reading
+
+Create a well-structured, engaging briefing.",
+                                            duration_seconds / 60,
+                                            reading_minutes,
+                                            article_data.len(),
+                                            context_text,
+                                            match language.as_str() {
+                                                "fr" => "French",
+                                                "es" => "Spanish",
+                                                "de" => "German",
+                                                "it" => "Italian",
+                                                _ => "English"
+                                            },
+                                            reading_minutes
+                                        );
+
+                                        // Single focused LLM call for synthesis (much lighter!)
+                                        match llm_provider.generate(crate::llm::LlmRequest {
+                                            prompt: synthesis_prompt,
+                                            max_tokens: Some((reading_minutes * 150) as usize),
+                                            temperature: Some(0.7),
+                                            timeout_seconds: Some(30),
+                                        }).await {
+                                            Ok(response) => {
+                                                let _ = crate::sessions::store_message(&pool, session_id, "assistant", &response.content).await;
+                                                let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                    "type": "message",
+                                                    "content": response.content
+                                                })).unwrap())).await;
+
+                                                // Include source links
+                                                let sources: Vec<serde_json::Value> = article_data.iter()
+                                                    .map(|(_, headline, _, relevance, url, _)| json!({
+                                                        "title": headline,
+                                                        "url": url,
+                                                        "score": relevance
+                                                    }))
+                                                    .collect();
+
+                                                let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                    "type": "sources",
+                                                    "sources": sources
+                                                })).unwrap())).await;
+
+                                                // Mark articles as viewed ONLY if synthesis succeeded
+                                                for (article_id, _, _, _, _, _) in &article_data {
+                                                    let _ = sqlx::query(
+                                                        "INSERT OR IGNORE INTO user_article_views (user_id, article_id) VALUES (?, ?)"
+                                                    )
+                                                    .bind(user_id)
+                                                    .bind(article_id)
+                                                    .execute(&pool)
+                                                    .await;
                                                 }
-                                            ));
-                                            prompt.push_str("Group by topic if possible. Be concise and engaging.\n\n");
-                                            
-                                            for article in chunk {
-                                                prompt.push_str(&format!("- **{}** (Source: {})\n", article.headline, article.feed_title));
-                                                for bullet in article.bullets.iter().take(2) {
-                                                    prompt.push_str(&format!("  * {}\n", bullet));
-                                                }
-                                                prompt.push_str(&format!("  [Read more]({})\n\n", article.url));
                                             }
-                                            
-                                            prompt.push_str("\nGenerate a short review section for these:");
-
-                                            match llm_provider.generate(LlmRequest {
-                                                prompt,
-                                                max_tokens: Some(300),
-                                                temperature: Some(0.7),
-                                                timeout_seconds: Some(30),
-                                            }).await {
-                                                Ok(response) => {
-                                                    let content = response.content;
-                                                    
-                                                    // Prepare sources for this chunk
-                                                    let sources: Vec<serde_json::Value> = chunk.iter().map(|article| {
-                                                        json!({
-                                                            "url": article.url,
-                                                            "title": article.article_title,
-                                                            "feed_title": article.feed_title,
-                                                            "score": article.score
-                                                        })
-                                                    }).collect();
-                                                    
-                                                    let _ = crate::sessions::store_message(&pool, session_id, "assistant", &content).await;
-                                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                        "type": "message",
-                                                        "content": content,
-                                                        "sources": sources
-                                                    })).unwrap())).await;
-
-                                                    // Mark articles in this chunk as viewed ONLY if generation succeeded
-                                                    for article in chunk {
-                                                        let _ = sqlx::query(
-                                                            "INSERT OR IGNORE INTO user_article_views (user_id, article_id, session_id) VALUES (?, ?, ?)"
-                                                        )
-                                                        .bind(user_id)
-                                                        .bind(article.id)
-                                                        .bind(session_id)
-                                                        .execute(&pool)
-                                                        .await;
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    error!("Failed to generate chunk review: {}", e);
-                                                    // Inform user of error so progress indicator is hidden
-                                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                        "type": "message",
-                                                        "content": "I apologize, but I encountered an error while generating the review for this section. Please check the server logs or try again later."
-                                                    })).unwrap())).await;
-                                                }
+                                            Err(e) => {
+                                                error!("Failed to generate synthesis: {}", e);
+                                                let error_msg = "I apologize, but I encountered an error while generating the review. Please check the server logs or try again later.";
+                                                let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                    "type": "error",
+                                                    "content": error_msg
+                                                })).unwrap())).await;
                                             }
                                         }
                                         
