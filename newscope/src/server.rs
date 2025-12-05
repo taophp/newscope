@@ -319,6 +319,7 @@ fn create_jwt_for_user(user_id: i64) -> Result<String, jsonwebtoken::errors::Err
 #[post("/api/v1/register", data = "<body>")]
 async fn register(
     state: &State<AppState>,
+    accept_lang: crate::sessions::websocket::AcceptLanguage,
     body: Json<RegisterRequest>,
 ) -> Result<Json<serde_json::Value>, Status> {
     let pool = &state.db;
@@ -349,6 +350,24 @@ async fn register(
             })?;
 
     let user_id = res.last_insert_rowid();
+
+    // Auto-create user preferences with browser language
+    let browser_lang = &accept_lang.0;
+    let default_interests = serde_json::json!(["technology", "science", "news"]).to_string();
+    
+    let _ = sqlx::query(
+        "INSERT INTO user_preferences 
+         (user_id, preference_type, preference_key, preference_value, language, complexity_level, interests) 
+         VALUES (?, 'profile', 'default', 1.0, ?, 'medium', ?)"
+    )
+    .bind(user_id)
+    .bind(browser_lang)
+    .bind(default_interests)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        tracing::warn!("failed to create user preferences (non-critical): {}", e);
+    });
 
     // Create JWT for the new user
     match create_jwt_for_user(user_id) {

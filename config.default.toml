@@ -125,39 +125,6 @@ level = "info"
 session_retention_days = 0
 
 # -------------------------
-# Users (defined in config for MVP)
-# -------------------------
-# You may add multiple [[users]] blocks. Each user may optionally include a list of feeds.
-# Passwords should be stored as secure hashes (argon2/bcrypt). For initial testing you can
-# set password_hash to null and rely on local trust/other auth approaches.
-#
-# Example defines two users.
-
-[[users]]
-username = "alice"
-display_name = "Alice Doe"
-# Preferred language for summaries and UI (e.g., "fr" or "en")
-preferred_language = "fr"
-# Store a password hash (argon2 recommended). Use a placeholder during development.
-password_hash = "<argon2_hash_or_empty_for_local_auth>"
-# Optional per-user feed list (initial feeds). Each feed is a table entry.
-[[users.feeds]]
-url = "https://blog.rust-lang.org/feed.xml"
-title = "Rust Blog"
-[[users.feeds]]
-url = "https://example.com/tech/rss"
-title = "Example Tech"
-
-[[users]]
-username = "bob"
-display_name = "Bob Researcher"
-preferred_language = "en"
-password_hash = "<argon2_hash_or_empty_for_local_auth>"
-[[users.feeds]]
-url = "https://another-site.com/rss"
-title = "Another Site"
-
-# -------------------------
 # Feed import and OPML
 # -------------------------
 [import]

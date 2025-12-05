@@ -16,11 +16,16 @@ pub async fn personalize_for_users(
     llm_provider: Arc<dyn LlmProvider>,
     model: &str,
 ) -> Result<usize> {
-    // Get all active users with preferences
-    let users = sqlx::query("SELECT DISTINCT u.id FROM users u JOIN user_preferences up ON u.id = up.user_id WHERE up.enabled = 1")
-        .fetch_all(pool)
-        .await
-        .context("Failed to fetch active users")?;
+    // Get all active users with preferences (those who have language set)
+    let users = sqlx::query(
+        "SELECT DISTINCT u.id 
+         FROM users u 
+         JOIN user_preferences up ON u.id = up.user_id 
+         WHERE up.language IS NOT NULL"
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch active users")?;
 
     if users.is_empty() {
         info!("No active users to personalize for");

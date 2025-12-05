@@ -18,9 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_user_preferences_user ON user_preferences(user_id
 CREATE INDEX IF NOT EXISTS idx_user_preferences_type ON user_preferences(preference_type);
 
 -- Add categories column to article_summaries (JSON array of category strings)
--- NOTE: This column is already created in 20250101000000_initial_schema.sql
--- So we don't need to add it again here
--- ALTER TABLE article_summaries ADD COLUMN categories TEXT;
+ALTER TABLE article_summaries ADD COLUMN categories TEXT;
 
 -- Example categories: politics, economy, technology, sports, culture, science,
 -- local_news, international, faits_divers, health, environment
