@@ -165,14 +165,16 @@ pub fn chat_websocket(
 
                                     // LIGHTWEIGHT LLM TASK: Create narrative synthesis
                                     let synthesis_prompt = format!(
-                                        "You are an intelligent news aggregator designed for maximum efficiency.
+                                        "IMPORTANT: You MUST respond in {}.
 
-The user has {} minutes. Synthesize these {} items into a high-density, strictly factual summary:
+You are an intelligent news aggregator designed for maximum efficiency.
+
+The user has {} minutes. Synthesize these {} items into a high-density, strictly factual summary in {}.
 
 {}
 
 CRITICAL INSTRUCTIONS:
-1. Respond in {} (mandatory).
+1. LANGUAGE: Output MUST be in {}.
 2. NO SELF-REFERENCE: Do NOT use 'I', 'we', 'us', 'me'. Do NOT refer to yourself or the briefing process.
 3. NO CONVERSATIONAL FILLER: Do NOT say 'Here is the news', 'Let's look at', 'In conclusion'.
 4. STRUCTURE: Group by events/topics. Use bold headers for key events.
@@ -180,9 +182,23 @@ CRITICAL INSTRUCTIONS:
 6. INLINE SOURCE MARKERS: At the end of each paragraph, list sources in brackets: '...fact ended. [Source Name]'
 7. Length: Optimized for ~{} minutes reading.
 
-Target: A dense, executive-level summary.",
+Target: A dense, executive-level summary in {}.",
+                                        match language.as_str() {
+                                            "fr" => "French",
+                                            "es" => "Spanish",
+                                            "de" => "German",
+                                            "it" => "Italian",
+                                            _ => "English"
+                                        },
                                         reading_minutes,
                                         article_data.len(),
+                                        match language.as_str() {
+                                            "fr" => "French",
+                                            "es" => "Spanish",
+                                            "de" => "German",
+                                            "it" => "Italian",
+                                            _ => "English"
+                                        },
                                         context_text,
                                         match language.as_str() {
                                             "fr" => "French",
@@ -191,7 +207,14 @@ Target: A dense, executive-level summary.",
                                             "it" => "Italian",
                                             _ => "English"
                                         },
-                                        reading_minutes
+                                        reading_minutes,
+                                        match language.as_str() {
+                                            "fr" => "French",
+                                            "es" => "Spanish",
+                                            "de" => "German",
+                                            "it" => "Italian",
+                                            _ => "English"
+                                        }
                                     );
 
                                     // Single focused LLM call for synthesis (much lighter!)
