@@ -67,7 +67,7 @@ pub fn chat_websocket(
                             
                             let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                 "type": "message",
-                                "content": "👋 Hello! I'm preparing your personalized press review based on new articles..."
+                                "content": "👋 Hello! I'm preparing your personalized press review. I'll send you a notification when it's ready..."
                             })).unwrap())).await;
 
                             // Send initial progress

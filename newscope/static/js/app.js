@@ -277,6 +277,11 @@ const App = {
                 data.messages.forEach(msg => this.addMessage(msg.author, msg.message));
             }
 
+            // Request notification permission
+            if ('Notification' in window && Notification.permission === 'default') {
+                await Notification.requestPermission();
+            }
+
             // Connect WebSocket
             this.chatManager.connect(sessionId);
             this.chatManager.onMessage = (data) => this.handleChatMessage(data);
@@ -316,6 +321,14 @@ const App = {
             this.hideProgress();
             this.hideThinking(); // Hide thinking indicator
             this.addMessage('assistant', data.content, data.sources || null);
+
+            // Send system notification if page is hidden
+            if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+                new Notification('Newscope', {
+                    body: 'Your press review is ready!',
+                    icon: '/static/favicon.ico' // Assuming you have one, or remove if not
+                });
+            }
         } else if (data.type === 'history') {
             // Chat history replay
             this.addMessage(data.role === 'user' ? 'user' : 'assistant', data.content);
