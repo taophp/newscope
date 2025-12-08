@@ -351,7 +351,7 @@ async fn handle_chat_message(
     let messages = get_messages(pool, session_id).await?;
 
     // Get session to find user_id
-    let session = get_session(pool, session_id).await?;
+    let session = crate::sessions::get_session(pool, session_id).await?;
     
     // Get user profile for language
     let mut language = "English".to_string();
