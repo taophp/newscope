@@ -194,12 +194,6 @@ Create a well-structured, engaging briefing.",
                                         timeout_seconds: Some(120),
                                     }).await {
                                         Ok(response) => {
-                                            let _ = crate::sessions::store_message(&pool, session_id, "assistant", &response.content).await;
-                                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                "type": "message",
-                                                "content": response.content
-                                            })).unwrap())).await;
-
                                             // Include source links
                                             let sources: Vec<serde_json::Value> = article_data.iter()
                                                 .map(|(_, headline, _, relevance, url, feed_title)| json!({
@@ -210,10 +204,12 @@ Create a well-structured, engaging briefing.",
                                                 }))
                                                 .collect();
 
-                                                let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                    "type": "sources",
-                                                    "sources": sources
-                                                })).unwrap())).await;
+                                            let _ = crate::sessions::store_message(&pool, session_id, "assistant", &response.content).await;
+                                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                "type": "message",
+                                                "content": response.content,
+                                                "sources": sources
+                                            })).unwrap())).await;
 
                                                 // Mark articles as viewed ONLY if synthesis succeeded
                                                 for (article_id, _, _, _, _, _) in &article_data {
