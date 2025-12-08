@@ -301,6 +301,7 @@ const App = {
         if (!message) return;
 
         this.addMessage('user', message);
+        this.showThinking(); // Show thinking indicator
         this.chatManager.send(message);
         input.value = '';
     },
@@ -313,6 +314,7 @@ const App = {
         } else if (data.type === 'message' && data.content) {
             // Hide progress and show new message from server
             this.hideProgress();
+            this.hideThinking(); // Hide thinking indicator
             this.addMessage('assistant', data.content, data.sources || null);
         } else if (data.type === 'history') {
             // Chat history replay
@@ -334,6 +336,33 @@ const App = {
     hideProgress() {
         const indicator = document.getElementById('progress-indicator');
         indicator.classList.add('hidden');
+    },
+
+    showThinking() {
+        const container = document.getElementById('chat-messages');
+        // Remove existing thinking bubble if any
+        this.hideThinking();
+
+        const thinkingDiv = document.createElement('div');
+        thinkingDiv.id = 'thinking-indicator';
+        thinkingDiv.className = 'message assistant';
+        thinkingDiv.innerHTML = `
+            <div class="avatar">A</div>
+            <div class="thinking-bubble">
+                <div class="thinking-dot"></div>
+                <div class="thinking-dot"></div>
+                <div class="thinking-dot"></div>
+            </div>
+        `;
+        container.appendChild(thinkingDiv);
+        container.scrollTop = container.scrollHeight;
+    },
+
+    hideThinking() {
+        const existing = document.getElementById('thinking-indicator');
+        if (existing) {
+            existing.remove();
+        }
     },
 
     addMessage(author, text, sources = null) {

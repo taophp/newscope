@@ -767,4 +767,43 @@ input[type="range"] {
 .error-list li {
     color: var(--error);
     margin-bottom: var(--space-xs);
+}/* === Thinking Indicator === */
+.thinking-bubble {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 16px;
+    background: var(--bg-card);
+    border-radius: 16px;
+    border-bottom-left-radius: 4px;
+    margin-bottom: 12px;
+}
+
+.thinking-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.thinking-dot:nth-child(1) {
+    animation-delay: -0.32s;
+}
+
+.thinking-dot:nth-child(2) {
+    animation-delay: -0.16s;
+}
+
+@keyframes bounce {
+
+    0%,
+    80%,
+    100% {
+        transform: scale(0);
+    }
+
+    40% {
+        transform: scale(1.0);
+    }
 }
