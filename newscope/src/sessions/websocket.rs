@@ -157,22 +157,22 @@ pub fn chat_websocket(
 
                                     // LIGHTWEIGHT LLM TASK: Create narrative synthesis
                                     let synthesis_prompt = format!(
-                                        "You are a professional news anchor delivering a concise, event-driven briefing.
+                                        "You are an intelligent news aggregator designed for maximum efficiency.
 
-The user has {} minutes. Synthesize these {} items into a direct, high-impact update:
+The user has {} minutes. Synthesize these {} items into a high-density, strictly factual summary:
 
 {}
 
 CRITICAL INSTRUCTIONS:
 1. Respond in {} (mandatory).
-2. STRUCTURE BY EVENTS/NEWS ITEMS.
-3. BE DIRECT: Start immediately with the news.
-4. NO NARRATIVE CITATIONS: Do NOT say 'According to Le Monde' or 'TechCrunch reports'.
-5. INLINE SOURCE MARKERS: At the end of each paragraph, list the sources used in brackets, exactly as they appear in the context. Example: '...end of the update. [Le Monde] [TechCrunch]'
-6. TONE: Professional, objective, journalistic.
-7. Length: Calibrated for ~{} minutes reading.
+2. NO SELF-REFERENCE: Do NOT use 'I', 'we', 'us', 'me'. Do NOT refer to yourself or the briefing process.
+3. NO CONVERSATIONAL FILLER: Do NOT say 'Here is the news', 'Let's look at', 'In conclusion'.
+4. STRUCTURE: Group by events/topics. Use bold headers for key events.
+5. DENSITY: Focus on facts, figures, and key developments. Remove fluff.
+6. INLINE SOURCE MARKERS: At the end of each paragraph, list sources in brackets: '...fact ended. [Source Name]'
+7. Length: Optimized for ~{} minutes reading.
 
-Deliver a sharp, professional news update.",
+Target: A dense, executive-level summary.",
                                         reading_minutes,
                                         article_data.len(),
                                         context_text,
