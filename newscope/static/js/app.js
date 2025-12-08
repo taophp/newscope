@@ -380,6 +380,7 @@ const App = {
                     ${sources.map(s => {
             const domain = this.extractDomain(s.url);
             const faviconUrl = `${domain}/favicon.ico`;
+            const sourceName = s.source || 'Unknown';
             return `
                             <a href="${s.url}" target="_blank" rel="noopener noreferrer" class="source-item">
                                 <img src="${faviconUrl}" 
@@ -387,7 +388,11 @@ const App = {
                                      class="source-icon" 
                                      onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
                                 <span class="source-icon-fallback" style="display:none;">📰</span>
-                                <span class="source-title">${this.truncate(s.title, 40)}</span>
+                                <span class="source-info">
+                                    <span class="source-name" style="font-weight:600;">${sourceName}</span>
+                                    <span class="source-sep" style="opacity:0.5;">•</span>
+                                    <span class="source-title">${this.truncate(s.title, 40)}</span>
+                                </span>
                             </a>
                         `;
         }).join('')}
