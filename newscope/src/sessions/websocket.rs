@@ -65,9 +65,17 @@ pub fn chat_websocket(
                             .unwrap_or("unknown")
                             .to_string();
                             
+                            let greeting = match language.as_str() {
+                                "fr" => "👋 Bonjour ! Je prépare votre revue de presse personnalisée. Je vous enverrai une notification quand elle sera prête...",
+                                "es" => "👋 ¡Hola! Estoy preparando su resumen de prensa personalizado. Le enviaré una notificación cuando esté listo...",
+                                "de" => "👋 Hallo! Ich bereite Ihren persönlichen Pressespiegel vor. Ich sende Ihnen eine Benachrichtigung, wenn er fertig ist...",
+                                "it" => "👋 Ciao! Sto preparando la tua rassegna stampa personalizzata. Ti invierò una notifica quando sarà pronta...",
+                                _ => "👋 Hello! I'm preparing your personalized press review. I'll send you a notification when it's ready..."
+                            };
+
                             let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                 "type": "message",
-                                "content": "👋 Hello! I'm preparing your personalized press review. I'll send you a notification when it's ready..."
+                                "content": greeting
                             })).unwrap())).await;
 
                             // Send initial progress
