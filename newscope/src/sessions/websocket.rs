@@ -165,11 +165,11 @@ The user has {} minutes. Synthesize these {} items into a direct, high-impact up
 
 CRITICAL INSTRUCTIONS:
 1. Respond in {} (mandatory).
-2. STRUCTURE BY EVENTS/NEWS ITEMS, not abstract themes. Group related updates under clear event headers.
-3. BE DIRECT: No 'In this briefing' or 'We will explore'. Start immediately with the most important news.
-4. CITE SOURCES INLINE: You MUST mention the source for every key fact (e.g., 'According to Le Monde...', 'TechCrunch reports that...').
-5. CONTEXTUALIZE: Briefly explain WHY each event matters (impact, consequences).
-6. TONE: Professional, objective, journalistic. Avoid 'high school essay' style.
+2. STRUCTURE BY EVENTS/NEWS ITEMS.
+3. BE DIRECT: Start immediately with the news.
+4. NO NARRATIVE CITATIONS: Do NOT say 'According to Le Monde' or 'TechCrunch reports'.
+5. INLINE SOURCE MARKERS: At the end of each paragraph, list the sources used in brackets, exactly as they appear in the context. Example: '...end of the update. [Le Monde] [TechCrunch]'
+6. TONE: Professional, objective, journalistic.
 7. Length: Calibrated for ~{} minutes reading.
 
 Deliver a sharp, professional news update.",

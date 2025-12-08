@@ -345,16 +345,50 @@ const App = {
 
         // Render Markdown for assistant, escape HTML for user
         let content;
-        if (author === 'assistant' && window.marked) {
-            content = marked.parse(text);
+        let usedSources = new Set();
+
+        if (author === 'assistant') {
+            // Process inline sources BEFORE markdown parsing
+            // Look for [Source Name] patterns
+            let processedText = text;
+
+            if (sources && sources.length > 0) {
+                // Create a map for quick lookup
+                const sourceMap = new Map();
+                sources.forEach(s => {
+                    if (s.source) sourceMap.set(s.source.toLowerCase(), s);
+                });
+
+                // Regex to find [Source Name]
+                // We use a replacer function to substitute with HTML
+                processedText = text.replace(/\[(.*?)\]/g, (match, sourceName) => {
+                    const source = sourceMap.get(sourceName.toLowerCase());
+                    if (source) {
+                        usedSources.add(source);
+                        return this.renderSourceItem(source, true); // true = inline style
+                    }
+                    return match; // Keep original if not found
+                });
+            }
+
+            if (window.marked) {
+                content = marked.parse(processedText);
+            } else {
+                content = this.escapeHtml(processedText);
+            }
         } else {
             content = this.escapeHtml(text);
         }
 
-        // Add sources if present
+        // Add remaining sources at the bottom if present
         let sourcesHtml = '';
         if (sources && sources.length > 0) {
-            sourcesHtml = this.renderSources(sources);
+            // Filter out sources that were already rendered inline
+            const remainingSources = sources.filter(s => !usedSources.has(s));
+
+            if (remainingSources.length > 0) {
+                sourcesHtml = this.renderSources(remainingSources);
+            }
         }
 
         messageDiv.innerHTML = `
@@ -369,33 +403,38 @@ const App = {
         container.scrollTop = container.scrollHeight;
     },
 
+    renderSourceItem(s, inline = false) {
+        const domain = this.extractDomain(s.url);
+        const faviconUrl = `${domain}/favicon.ico`;
+        const sourceName = s.source || 'Unknown';
+
+        const inlineClass = inline ? 'source-inline' : '';
+        const style = inline ? 'display: inline-flex; vertical-align: middle; margin: 0 2px;' : '';
+
+        return `
+            <a href="${s.url}" target="_blank" rel="noopener noreferrer" class="source-item ${inlineClass}" style="${style}">
+                <img src="${faviconUrl}" 
+                        alt="" 
+                        class="source-icon" 
+                        onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
+                <span class="source-icon-fallback" style="display:none;">📰</span>
+                <span class="source-info">
+                    <span class="source-name" style="font-weight:600;">${sourceName}</span>
+                    ${!inline ? `<span class="source-sep" style="opacity:0.5;">•</span><span class="source-title">${this.truncate(s.title, 40)}</span>` : ''}
+                </span>
+            </a>
+        `;
+    },
+
     renderSources(sources) {
         // Sort by score (relevance)
         sources.sort((a, b) => b.score - a.score);
 
         return `
             <div class="sources-container">
-                <div class="sources-label">Sources:</div>
+                <div class="sources-label">Other Sources:</div>
                 <div class="sources-list">
-                    ${sources.map(s => {
-            const domain = this.extractDomain(s.url);
-            const faviconUrl = `${domain}/favicon.ico`;
-            const sourceName = s.source || 'Unknown';
-            return `
-                            <a href="${s.url}" target="_blank" rel="noopener noreferrer" class="source-item">
-                                <img src="${faviconUrl}" 
-                                     alt="" 
-                                     class="source-icon" 
-                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
-                                <span class="source-icon-fallback" style="display:none;">📰</span>
-                                <span class="source-info">
-                                    <span class="source-name" style="font-weight:600;">${sourceName}</span>
-                                    <span class="source-sep" style="opacity:0.5;">•</span>
-                                    <span class="source-title">${this.truncate(s.title, 40)}</span>
-                                </span>
-                            </a>
-                        `;
-        }).join('')}
+                    ${sources.map(s => this.renderSourceItem(s)).join('')}
                 </div>
             </div>
         `;
