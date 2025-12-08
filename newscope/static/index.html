@@ -89,30 +89,30 @@
                     <button id="btn-new-session" class="btn btn-primary btn-block">+ New Session</button>
                 </div>
 
+                <!-- Sessions Section -->
+                <section class="sidebar-section">
+                    <h3 class="collapsible-header collapsed" onclick="toggleSection(this)">
+                        Sessions <span class="toggle-icon">▼</span>
+                    </h3>
+                    <div class="collapsible-content collapsed">
+                        <div class="session-list" id="session-list">
+                            <p class="empty-state">No sessions</p>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- Feeds Section -->
                 <section class="sidebar-section">
-                    <h3 class="collapsible-header" onclick="toggleSection(this)">
+                    <h3 class="collapsible-header collapsed" onclick="toggleSection(this)">
                         Feeds <span class="toggle-icon">▼</span>
                     </h3>
-                    <div class="collapsible-content">
+                    <div class="collapsible-content collapsed">
                         <div class="feed-list" id="feed-list">
                             <p class="empty-state">No feeds yet</p>
                         </div>
                         <button id="btn-add-feed" class="btn btn-secondary btn-block">+ Add Feed</button>
                         <button id="btn-import-opds" class="btn btn-secondary btn-block" style="margin-top: 8px;">📁
                             Import OPML</button>
-                    </div>
-                </section>
-
-                <!-- Sessions Section -->
-                <section class="sidebar-section">
-                    <h3 class="collapsible-header" onclick="toggleSection(this)">
-                        Sessions <span class="toggle-icon">▼</span>
-                    </h3>
-                    <div class="collapsible-content">
-                        <div class="session-list" id="session-list">
-                            <p class="empty-state">No sessions</p>
-                        </div>
                     </div>
                 </section>
             </aside>

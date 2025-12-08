@@ -578,3 +578,10 @@ const App = {
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => App.init());
+
+// Global helper for collapsible sections
+function toggleSection(header) {
+    header.classList.toggle('collapsed');
+    const content = header.nextElementSibling;
+    content.classList.toggle('collapsed');
+}
