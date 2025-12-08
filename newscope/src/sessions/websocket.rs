@@ -157,21 +157,22 @@ pub fn chat_websocket(
 
                                     // LIGHTWEIGHT LLM TASK: Create narrative synthesis
                                     let synthesis_prompt = format!(
-                                        "You are creating a personalized news briefing for a {} minute session.
+                                        "You are a professional news anchor delivering a concise, event-driven briefing.
 
-The user has {} minutes for reading. Create a cohesive narrative synthesis highlighting the most important themes and stories from these {} pre-selected articles:
+The user has {} minutes. Synthesize these {} items into a direct, high-impact update:
 
 {}
 
-Instructions:
-1. Respond in {} (important!)
-2. Identify 2-3 major themes connecting these stories
-3. Create a compelling introduction highlighting what's most important
-4. Group related stories together with smooth transitions
-5. Keep the synthesis engaging and conversational
-6. Total length should fit ~{} minutes of reading
+CRITICAL INSTRUCTIONS:
+1. Respond in {} (mandatory).
+2. STRUCTURE BY EVENTS/NEWS ITEMS, not abstract themes. Group related updates under clear event headers.
+3. BE DIRECT: No 'In this briefing' or 'We will explore'. Start immediately with the most important news.
+4. CITE SOURCES INLINE: You MUST mention the source for every key fact (e.g., 'According to Le Monde...', 'TechCrunch reports that...').
+5. CONTEXTUALIZE: Briefly explain WHY each event matters (impact, consequences).
+6. TONE: Professional, objective, journalistic. Avoid 'high school essay' style.
+7. Length: Calibrated for ~{} minutes reading.
 
-Create a well-structured, engaging briefing.",
+Deliver a sharp, professional news update.",
                                         duration_seconds / 60,
                                         reading_minutes,
                                         article_data.len(),
