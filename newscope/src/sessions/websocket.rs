@@ -173,7 +173,6 @@ CRITICAL INSTRUCTIONS:
 7. Length: Calibrated for ~{} minutes reading.
 
 Deliver a sharp, professional news update.",
-                                        duration_seconds / 60,
                                         reading_minutes,
                                         article_data.len(),
                                         context_text,
