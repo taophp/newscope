@@ -114,44 +114,50 @@ pub fn chat_websocket(
                                             "content": msg
                                         })).unwrap())).await;
                                     } else {
-                                        // Hide progress indicator
-                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                            "type": "progress_hide"
-                                        })).unwrap())).await;
+                                    // Fetch user profile to get preferred language
+                                    let mut language = language.clone();
+                                    if let Ok(profile) = crate::personalization::get_user_profile(&pool, user_id).await {
+                                        language = profile.language;
+                                    }
 
-                                        // Extract article data from rows
-                                        use sqlx::Row;
-                                        let article_data: Vec<(i64, String, String, f64, String, Option<String>)> = articles.iter()
-                                            .map(|row| {
-                                                let article_id: i64 = row.get("article_id");
-                                                let headline: String = row.get("personalized_headline");
-                                                let bullets: String = row.get("personalized_bullets");
-                                                let relevance: f64 = row.get("relevance_score");
-                                                let url: String = row.get("canonical_url");
-                                                let feed_title: Option<String> = row.try_get("feed_title").ok();
-                                                (article_id, headline, bullets, relevance, url, feed_title)
-                                            })
-                                            .collect();
+                                    // Hide progress indicator
+                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                        "type": "progress_hide"
+                                    })).unwrap())).await;
 
-                                        // Build context from pre-computed summaries
-                                        let articles_context: Vec<String> = article_data.iter()
-                                            .map(|(_, headline, bullets_json, relevance, _, feed_title)| {
-                                                let bullets: Vec<String> = serde_json::from_str(bullets_json).unwrap_or_default();
-                                                format!(
-                                                    "**{}**\nSource: {}\nRelevance: {:.2}\nPoints:\n- {}",
-                                                    headline,
-                                                    feed_title.as_deref().unwrap_or("Unknown"),
-                                                    relevance,
-                                                    bullets.join("\n- ")
-                                                )
-                                            })
-                                            .collect();
+                                    // Extract article data from rows
+                                    use sqlx::Row;
+                                    let article_data: Vec<(i64, String, String, f64, String, Option<String>)> = articles.iter()
+                                        .map(|row| {
+                                            let article_id: i64 = row.get("article_id");
+                                            let headline: String = row.get("personalized_headline");
+                                            let bullets: String = row.get("personalized_bullets");
+                                            let relevance: f64 = row.get("relevance_score");
+                                            let url: String = row.get("canonical_url");
+                                            let feed_title: Option<String> = row.try_get("feed_title").ok();
+                                            (article_id, headline, bullets, relevance, url, feed_title)
+                                        })
+                                        .collect();
 
-                                        let context_text = articles_context.join("\n\n---\n\n");
+                                    // Build context from pre-computed summaries
+                                    let articles_context: Vec<String> = article_data.iter()
+                                        .map(|(_, headline, bullets_json, relevance, _, feed_title)| {
+                                            let bullets: Vec<String> = serde_json::from_str(bullets_json).unwrap_or_default();
+                                            format!(
+                                                "**{}**\nSource: {}\nRelevance: {:.2}\nPoints:\n- {}",
+                                                headline,
+                                                feed_title.as_deref().unwrap_or("Unknown"),
+                                                relevance,
+                                                bullets.join("\n- ")
+                                            )
+                                        })
+                                        .collect();
 
-                                        // LIGHTWEIGHT LLM TASK: Create narrative synthesis
-                                        let synthesis_prompt = format!(
-                                            "You are creating a personalized news briefing for a {} minute session.
+                                    let context_text = articles_context.join("\n\n---\n\n");
+
+                                    // LIGHTWEIGHT LLM TASK: Create narrative synthesis
+                                    let synthesis_prompt = format!(
+                                        "You are creating a personalized news briefing for a {} minute session.
 
 The user has {} minutes for reading. Create a cohesive narrative synthesis highlighting the most important themes and stories from these {} pre-selected articles:
 
@@ -166,42 +172,43 @@ Instructions:
 6. Total length should fit ~{} minutes of reading
 
 Create a well-structured, engaging briefing.",
-                                            duration_seconds / 60,
-                                            reading_minutes,
-                                            article_data.len(),
-                                            context_text,
-                                            match language.as_str() {
-                                                "fr" => "French",
-                                                "es" => "Spanish",
-                                                "de" => "German",
-                                                "it" => "Italian",
-                                                _ => "English"
-                                            },
-                                            reading_minutes
-                                        );
+                                        duration_seconds / 60,
+                                        reading_minutes,
+                                        article_data.len(),
+                                        context_text,
+                                        match language.as_str() {
+                                            "fr" => "French",
+                                            "es" => "Spanish",
+                                            "de" => "German",
+                                            "it" => "Italian",
+                                            _ => "English"
+                                        },
+                                        reading_minutes
+                                    );
 
-                                        // Single focused LLM call for synthesis (much lighter!)
-                                        match llm_provider.generate(crate::llm::LlmRequest {
-                                            prompt: synthesis_prompt,
-                                            max_tokens: Some((reading_minutes * 150) as usize),
-                                            temperature: Some(0.7),
-                                            timeout_seconds: Some(120),
-                                        }).await {
-                                            Ok(response) => {
-                                                let _ = crate::sessions::store_message(&pool, session_id, "assistant", &response.content).await;
-                                                let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                    "type": "message",
-                                                    "content": response.content
-                                                })).unwrap())).await;
+                                    // Single focused LLM call for synthesis (much lighter!)
+                                    match llm_provider.generate(crate::llm::LlmRequest {
+                                        prompt: synthesis_prompt,
+                                        max_tokens: Some((reading_minutes * 150) as usize),
+                                        temperature: Some(0.7),
+                                        timeout_seconds: Some(120),
+                                    }).await {
+                                        Ok(response) => {
+                                            let _ = crate::sessions::store_message(&pool, session_id, "assistant", &response.content).await;
+                                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                                "type": "message",
+                                                "content": response.content
+                                            })).unwrap())).await;
 
-                                                // Include source links
-                                                let sources: Vec<serde_json::Value> = article_data.iter()
-                                                    .map(|(_, headline, _, relevance, url, _)| json!({
-                                                        "title": headline,
-                                                        "url": url,
-                                                        "score": relevance
-                                                    }))
-                                                    .collect();
+                                            // Include source links
+                                            let sources: Vec<serde_json::Value> = article_data.iter()
+                                                .map(|(_, headline, _, relevance, url, feed_title)| json!({
+                                                    "title": headline,
+                                                    "url": url,
+                                                    "score": relevance,
+                                                    "source": feed_title.as_deref().unwrap_or("Unknown")
+                                                }))
+                                                .collect();
 
                                                 let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                                     "type": "sources",
