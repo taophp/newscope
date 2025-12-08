@@ -350,16 +350,29 @@ async fn handle_chat_message(
     // Get conversation history
     let messages = get_messages(pool, session_id).await?;
 
-    // Build conversation context
-    let mut context = String::from(
-        "You are a helpful news assistant for Newscope. \\
-         The user is exploring their personalized news feed. \
-         Answer questions concisely and help them understand the news.\n\n"
-    );
+    // Get session to find user_id
+    let session = get_session(pool, session_id).await?;
     
-    // Note: We don't easily have language here without passing it through store_message or similar,
-    // but the system prompt could be updated if we stored language in session.
-    // For now, we rely on the LLM adapting to the user's language in the conversation history.
+    // Get user profile for language
+    let mut language = "English".to_string();
+    if let Ok(profile) = crate::personalization::get_user_profile(pool, session.user_id).await {
+        language = match profile.language.as_str() {
+            "fr" => "French",
+            "es" => "Spanish",
+            "de" => "German",
+            "it" => "Italian",
+            _ => "English"
+        }.to_string();
+    }
+
+    // Build conversation context
+    let mut context = format!(
+        "You are a helpful news assistant for Newscope. \
+         The user is exploring their personalized news feed. \
+         Answer questions concisely and help them understand the news. \
+         IMPORTANT: You MUST answer in {}.\n\n",
+         language
+    );
 
     for msg in messages.iter().rev().take(10).rev() {
         context.push_str(&format!("{}: {}\n", msg.author, msg.message));
