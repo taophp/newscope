@@ -316,6 +316,21 @@ const App = {
         if (data.type === 'progress') {
             // Show progress indicator with status message
             this.updateProgress(data.message || 'Processing...');
+        } else if (data.type === 'news_item') {
+            // NEW: Render a News Card
+            this.hideProgress();
+            this.hideThinking();
+            const card = this.renderNewsCard(data.article);
+            const container = document.getElementById('chat-messages');
+            container.appendChild(card);
+            container.scrollTop = container.scrollHeight;
+
+            // Send system notification if page is hidden (only for the first card to avoid spam?)
+            // Or maybe we notify for the "batch" start.
+            if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+                // Debounce notification?
+            }
+
         } else if (data.type === 'message' && data.content) {
             // Hide progress and show new message from server
             this.hideProgress();
@@ -586,6 +601,93 @@ const App = {
             document.getElementById('opds-progress').classList.add('hidden');
             alert(`Import failed: ${error.message}`);
         }
+    },
+
+    renderNewsCard(article) {
+        // Create card container
+        const card = document.createElement('div');
+        card.className = 'news-card';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'card-header';
+        header.innerHTML = `
+            <h3 class="card-title">${article.title}</h3>
+            <span class="card-theme">${article.theme || 'Actualité'}</span>
+        `;
+        card.appendChild(header);
+
+        // Content
+        const content = document.createElement('div');
+        content.className = 'card-content';
+        content.innerHTML = `<p>${article.summary}</p>`;
+        card.appendChild(content);
+
+        // Footer
+        const footer = document.createElement('div');
+        footer.className = 'card-footer';
+
+        // Source Icons (Left)
+        const sourceIcons = document.createElement('div');
+        sourceIcons.className = 'source-icons';
+        if (article.sources && Array.isArray(article.sources)) {
+            article.sources.forEach(source => {
+                // Try to get domain for favicon
+                let domain = source.url ? new URL(source.url).hostname : '';
+                if (domain) {
+                    const img = document.createElement('img');
+                    img.src = `https://www.google.com/s2/favicons?domain=${domain}`;
+                    img.className = 'source-icon';
+                    img.title = source.name || domain;
+                    sourceIcons.appendChild(img);
+                }
+            });
+        }
+        footer.appendChild(sourceIcons);
+
+        // Actions (Right)
+        const actions = document.createElement('div');
+        actions.className = 'card-actions';
+
+        // Rating Stars
+        const ratingDiv = document.createElement('div');
+        ratingDiv.className = 'rating-stars';
+        // 5 to 1 for row-reverse logic
+        for (let i = 5; i >= 1; i--) {
+            const star = document.createElement('span');
+            star.className = 'star';
+            star.textContent = '★';
+            star.dataset.value = i;
+            star.onclick = () => {
+                console.log(`Rated ${i} stars for article ${article.id}`);
+                // Visual feedback (optional, as hover handles it mostly)
+                // TODO: Send rating to backend
+            };
+            ratingDiv.appendChild(star);
+        }
+        actions.appendChild(ratingDiv);
+
+        // Learn More Button
+        const btnLearnMore = document.createElement('button');
+        btnLearnMore.className = 'btn-learn-more';
+        btnLearnMore.innerHTML = `
+            <span>En savoir plus</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 18l6-6-6-6"/>
+            </svg>
+        `;
+        btnLearnMore.onclick = () => {
+            const query = `Dis-m'en plus sur : ${article.title}`;
+            this.addMessage('user', query);
+            this.showThinking();
+            this.chatManager.send(query);
+        };
+        actions.appendChild(btnLearnMore);
+
+        footer.appendChild(actions);
+        card.appendChild(footer);
+
+        return card;
     }
 };
 

@@ -767,7 +767,9 @@ input[type="range"] {
 .error-list li {
     color: var(--error);
     margin-bottom: var(--space-xs);
-}/* === Thinking Indicator === */
+}
+
+/* === Thinking Indicator === */
 .thinking-bubble {
     display: inline-flex;
     align-items: center;
@@ -806,7 +808,9 @@ input[type="range"] {
     40% {
         transform: scale(1.0);
     }
-}/* === Collapsible Sidebar === */
+}
+
+/* === Collapsible Sidebar === */
 .collapsible-header {
     cursor: pointer;
     display: flex;
@@ -841,4 +845,127 @@ input[type="range"] {
     opacity: 0;
     margin: 0;
     padding: 0;
+}
+
+/* === News Card UI === */
+.news-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    padding: 20px;
+    max-width: calc(35em + 40px);
+    /* 35em content + 20px padding on each side */
+    width: fit-content;
+    border: 1px solid #e1e4e8;
+    margin-bottom: 20px;
+    /* Animation for appearance */
+    animation: slideIn 0.4s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.card-header {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 12px;
+    gap: 12px;
+    max-width: 35em;
+}
+
+.card-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin: 0;
+}
+
+.card-theme {
+    font-size: 0.85rem;
+    color: #6c757d;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.card-content {
+    font-size: 1rem;
+    line-height: 1.6;
+    color: #2c3e50;
+    margin-bottom: 20px;
+    max-width: 35em;
+}
+
+.card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 15px;
+    border-top: 1px solid #f0f0f0;
+}
+
+.source-icons {
+    display: flex;
+    gap: 8px;
+}
+
+.source-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    background-color: #eee;
+}
+
+.card-actions {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.rating-stars {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: flex-end;
+    gap: 2px;
+    cursor: pointer;
+}
+
+.star {
+    color: #d1d5db;
+    font-size: 1.2rem;
+    transition: color 0.2s;
+}
+
+.star:hover,
+.star:hover~.star {
+    color: #fbbf24;
+}
+
+.btn-learn-more {
+    background-color: #f3f4f6;
+    color: #374151;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-learn-more:hover {
+    background-color: #e5e7eb;
 }
