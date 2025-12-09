@@ -848,18 +848,26 @@ input[type="range"] {
 }
 
 /* === News Card UI === */
+.news-feed-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    width: 100%;
+    align-items: flex-start;
+}
+
 .news-card {
-    background: white;
+    background: var(--bg-card);
     border-radius: 12px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
     padding: 20px;
     max-width: calc(35em + 40px);
     /* 35em content + 20px padding on each side */
     width: fit-content;
-    border: 1px solid #e1e4e8;
-    margin-bottom: 20px;
+    border: 1px solid var(--border);
     /* Animation for appearance */
     animation: slideIn 0.4s ease-out;
+    color: var(--text-primary);
 }
 
 @keyframes slideIn {
@@ -885,13 +893,13 @@ input[type="range"] {
 .card-title {
     font-size: 1.1rem;
     font-weight: 700;
-    color: #1a1a1a;
+    color: var(--text-primary);
     margin: 0;
 }
 
 .card-theme {
     font-size: 0.85rem;
-    color: #6c757d;
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     font-weight: 500;
@@ -901,7 +909,7 @@ input[type="range"] {
 .card-content {
     font-size: 1rem;
     line-height: 1.6;
-    color: #2c3e50;
+    color: var(--text-primary);
     margin-bottom: 20px;
     max-width: 35em;
 }
@@ -911,7 +919,7 @@ input[type="range"] {
     justify-content: space-between;
     align-items: center;
     padding-top: 15px;
-    border-top: 1px solid #f0f0f0;
+    border-top: 1px solid var(--border);
 }
 
 .source-icons {

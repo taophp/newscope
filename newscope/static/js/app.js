@@ -322,11 +322,19 @@ const App = {
             this.hideThinking();
             const card = this.renderNewsCard(data.article);
             const container = document.getElementById('chat-messages');
-            container.appendChild(card);
+
+            // Check if last element is a news container
+            let feedContainer = container.lastElementChild;
+            if (!feedContainer || !feedContainer.classList.contains('news-feed-container')) {
+                feedContainer = document.createElement('div');
+                feedContainer.className = 'news-feed-container';
+                container.appendChild(feedContainer);
+            }
+
+            feedContainer.appendChild(card);
             container.scrollTop = container.scrollHeight;
 
             // Send system notification if page is hidden (only for the first card to avoid spam?)
-            // Or maybe we notify for the "batch" start.
             if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
                 // Debounce notification?
             }
@@ -611,9 +619,10 @@ const App = {
         // Header
         const header = document.createElement('div');
         header.className = 'card-header';
+        // Hiding theme for now as it duplicates source
         header.innerHTML = `
             <h3 class="card-title">${article.title}</h3>
-            <span class="card-theme">${article.theme || 'Actualité'}</span>
+            <!-- <span class="card-theme">${article.theme || 'Actualité'}</span> -->
         `;
         card.appendChild(header);
 
@@ -635,11 +644,18 @@ const App = {
                 // Try to get domain for favicon
                 let domain = source.url ? new URL(source.url).hostname : '';
                 if (domain) {
+                    const link = document.createElement('a');
+                    link.href = source.url;
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+
                     const img = document.createElement('img');
                     img.src = `https://www.google.com/s2/favicons?domain=${domain}`;
                     img.className = 'source-icon';
                     img.title = source.name || domain;
-                    sourceIcons.appendChild(img);
+
+                    link.appendChild(img);
+                    sourceIcons.appendChild(link);
                 }
             });
         }

@@ -205,17 +205,6 @@ pub fn chat_websocket(
                                     })).unwrap())).await;
                                 }
                             }
-                                        
-
-                                        
-                                        let outro = "That's all for now! Let me know if you want to explore any topic in depth.";
-                                        let _ = crate::sessions::store_message(&pool, session_id, "assistant", outro).await;
-                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                            "type": "message",
-                                            "content": outro
-                                        })).unwrap())).await;
-                                    }
-                                }
                                 Err(e) => {
                                     error!("Failed to fetch personalized articles for user {}: {:?}", user_id, e);
                                     let msg = "I'm having trouble accessing the latest news. Please try again later.";
