@@ -135,133 +135,76 @@ pub fn chat_websocket(
 
                                     // Extract article data from rows
                                     use sqlx::Row;
-                                    let article_data: Vec<(i64, String, String, f64, String, Option<String>)> = articles.iter()
+                                    let article_data: Vec<(i64, String, String, Option<String>, f64, String, Option<String>)> = articles.iter()
                                         .map(|row| {
                                             let article_id: i64 = row.get("article_id");
                                             let headline: String = row.get("personalized_headline");
                                             let bullets: String = row.get("personalized_bullets");
+                                            let details: Option<String> = row.try_get("personalized_details").ok();
                                             let relevance: f64 = row.get("relevance_score");
                                             let url: String = row.get("canonical_url");
                                             let feed_title: Option<String> = row.try_get("feed_title").ok();
-                                            (article_id, headline, bullets, relevance, url, feed_title)
+                                            (article_id, headline, bullets, details, relevance, url, feed_title)
                                         })
                                         .collect();
 
-                                    // Build context from pre-computed summaries
-                                    let articles_context: Vec<String> = article_data.iter()
-                                        .map(|(_, headline, bullets_json, relevance, _, feed_title)| {
-                                            let bullets: Vec<String> = serde_json::from_str(bullets_json).unwrap_or_default();
-                                            format!(
-                                                "**{}**\nSource: {}\nRelevance: {:.2}\nPoints:\n- {}",
-                                                headline,
-                                                feed_title.as_deref().unwrap_or("Unknown"),
-                                                relevance,
-                                                bullets.join("\n- ")
-                                            )
-                                        })
-                                        .collect();
+                                    // STREAMING MODE: Send articles as individual cards
+                                    for (article_id, headline, bullets_json, details, relevance, url, feed_title) in article_data {
+                                        // Construct summary: prefer details (paragraph), fallback to bullets
+                                        let summary = if let Some(d) = details {
+                                            d
+                                        } else {
+                                            let bullets: Vec<String> = serde_json::from_str(&bullets_json).unwrap_or_default();
+                                            bullets.join(" ")
+                                        };
 
-                                    let context_text = articles_context.join("\n\n---\n\n");
+                                        let theme = feed_title.clone().unwrap_or_else(|| "Actualité".to_string());
+                                        let source_name = feed_title.unwrap_or_else(|| "Unknown".to_string());
 
-                                    // LIGHTWEIGHT LLM TASK: Create narrative synthesis
-                                    let synthesis_prompt = format!(
-                                        "IMPORTANT: You MUST respond in {}.
-
-You are an intelligent news aggregator designed for maximum efficiency.
-
-The user has {} minutes. Synthesize these {} items into a high-density, strictly factual summary in {}.
-
-{}
-
-CRITICAL INSTRUCTIONS:
-1. LANGUAGE: Output MUST be in {}.
-2. NO SELF-REFERENCE: Do NOT use 'I', 'we', 'us', 'me'. Do NOT refer to yourself or the briefing process.
-3. NO CONVERSATIONAL FILLER: Do NOT say 'Here is the news', 'Let's look at', 'In conclusion'.
-4. STRUCTURE: Group by events/topics. Use bold headers for key events.
-5. DENSITY: Focus on facts, figures, and key developments. Remove fluff.
-6. INLINE SOURCE MARKERS: At the end of each paragraph, list sources in brackets: '...fact ended. [Source Name]'
-7. Length: Optimized for ~{} minutes reading.
-
-Target: A dense, executive-level summary in {}.",
-                                        match language.as_str() {
-                                            "fr" => "French",
-                                            "es" => "Spanish",
-                                            "de" => "German",
-                                            "it" => "Italian",
-                                            _ => "English"
-                                        },
-                                        reading_minutes,
-                                        article_data.len(),
-                                        match language.as_str() {
-                                            "fr" => "French",
-                                            "es" => "Spanish",
-                                            "de" => "German",
-                                            "it" => "Italian",
-                                            _ => "English"
-                                        },
-                                        context_text,
-                                        match language.as_str() {
-                                            "fr" => "French",
-                                            "es" => "Spanish",
-                                            "de" => "German",
-                                            "it" => "Italian",
-                                            _ => "English"
-                                        },
-                                        reading_minutes,
-                                        match language.as_str() {
-                                            "fr" => "French",
-                                            "es" => "Spanish",
-                                            "de" => "German",
-                                            "it" => "Italian",
-                                            _ => "English"
-                                        }
-                                    );
-
-                                    // Single focused LLM call for synthesis (much lighter!)
-                                    match llm_provider.generate(crate::llm::LlmRequest {
-                                        prompt: synthesis_prompt,
-                                        max_tokens: Some((reading_minutes * 150) as usize),
-                                        temperature: Some(0.7),
-                                        timeout_seconds: Some(120),
-                                    }).await {
-                                        Ok(response) => {
-                                            // Include source links
-                                            let sources: Vec<serde_json::Value> = article_data.iter()
-                                                .map(|(_, headline, _, relevance, url, feed_title)| json!({
-                                                    "title": headline,
-                                                    "url": url,
-                                                    "score": relevance,
-                                                    "source": feed_title.as_deref().unwrap_or("Unknown")
-                                                }))
-                                                .collect();
-
-                                            let _ = crate::sessions::store_message(&pool, session_id, "assistant", &response.content).await;
-                                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                "type": "message",
-                                                "content": response.content,
-                                                "sources": sources
-                                            })).unwrap())).await;
-
-                                                // Mark articles as viewed ONLY if synthesis succeeded
-                                                for (article_id, _, _, _, _, _) in &article_data {
-                                                    let _ = sqlx::query(
-                                                        "INSERT OR IGNORE INTO user_article_views (user_id, article_id) VALUES (?, ?)"
-                                                    )
-                                                    .bind(user_id)
-                                                    .bind(article_id)
-                                                    .execute(&pool)
-                                                    .await;
-                                                }
+                                        // Send News Card
+                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                            "type": "news_item",
+                                            "article": {
+                                                "id": article_id,
+                                                "title": headline,
+                                                "theme": theme,
+                                                "summary": summary,
+                                                "sources": [{
+                                                    "name": source_name,
+                                                    "url": url
+                                                }]
                                             }
-                                            Err(e) => {
-                                                error!("Failed to generate synthesis: {}", e);
-                                                let error_msg = "I apologize, but I encountered an error while generating the review. Please check the server logs or try again later.";
-                                                let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                                    "type": "error",
-                                                    "content": error_msg
-                                                })).unwrap())).await;
-                                            }
-                                        }
+                                        })).unwrap())).await;
+
+                                        // Mark as viewed immediately
+                                        let _ = sqlx::query(
+                                            "INSERT OR IGNORE INTO user_article_views (user_id, article_id) VALUES (?, ?)"
+                                        )
+                                        .bind(user_id)
+                                        .bind(article_id)
+                                        .execute(&pool)
+                                        .await;
+                                        
+                                        // Small delay for progressive effect (optional, but nice)
+                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    }
+
+                                    // Final message
+                                    let completion_msg = match language.as_str() {
+                                        "fr" => "Voilà pour l'essentiel de l'actualité. Souhaitez-vous approfondir un sujet ?",
+                                        "es" => "Eso es todo por ahora. ¿Desea profundizar en algún tema?",
+                                        "de" => "Das war das Wichtigste. Möchten Sie ein Thema vertiefen?",
+                                        "it" => "Questo è tutto per ora. Vuoi approfondire un argomento?",
+                                        _ => "That's the main news. Would you like to explore any topic further?"
+                                    };
+
+                                    let _ = crate::sessions::store_message(&pool, session_id, "assistant", completion_msg).await;
+                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                        "type": "message",
+                                        "content": completion_msg
+                                    })).unwrap())).await;
+                                }
+                            }
                                         
 
                                         
