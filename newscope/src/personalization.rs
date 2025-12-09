@@ -177,7 +177,7 @@ Return ONLY valid JSON:
 
     let response = llm.generate(LlmRequest {
         prompt,
-        max_tokens: Some(500),
+        max_tokens: Some(1000),
         temperature: Some(0.7),
         timeout_seconds: Some(30),
     }).await.context("Failed to generate personalized summary")?;

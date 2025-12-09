@@ -150,8 +150,8 @@ pub fn chat_websocket(
 
                                     // STREAMING MODE: Send articles as individual cards
                                     for (article_id, headline, bullets_json, details, relevance, url, feed_title) in article_data {
-                                        // Construct summary: prefer details (paragraph), fallback to bullets
-                                        let summary = if let Some(d) = details {
+                                        // Construct raw summary
+                                        let raw_summary = if let Some(d) = details {
                                             d
                                         } else {
                                             let bullets: Vec<String> = serde_json::from_str(&bullets_json).unwrap_or_default();
@@ -161,14 +161,68 @@ pub fn chat_websocket(
                                         let theme = feed_title.clone().unwrap_or_else(|| "Actualité".to_string());
                                         let source_name = feed_title.unwrap_or_else(|| "Unknown".to_string());
 
+                                        // JIT REFINEMENT: Translate & Fix Truncation
+                                        // We call the LLM to ensure the content is in the user's language and properly formatted.
+                                        let refine_prompt = format!(
+                                            "Task: Translate and refine this news item for a {} speaker.
+Title: {}
+Summary: {}
+
+Requirements:
+1. Language: {} ONLY.
+2. No truncation: Ensure the Title and Summary are complete sentences/phrases and NOT cut off.
+3. Style: Factual, dense, news-style.
+4. Output JSON: {{ \"title\": \"...\", \"summary\": \"...\" }}",
+                                            match language.as_str() {
+                                                "fr" => "French",
+                                                "es" => "Spanish",
+                                                "de" => "German",
+                                                "it" => "Italian",
+                                                _ => "English"
+                                            },
+                                            headline,
+                                            raw_summary,
+                                            match language.as_str() {
+                                                "fr" => "French",
+                                                "es" => "Spanish",
+                                                "de" => "German",
+                                                "it" => "Italian",
+                                                _ => "English"
+                                            }
+                                        );
+
+                                        let (final_title, final_summary) = match llm_provider.generate(crate::llm::LlmRequest {
+                                            prompt: refine_prompt,
+                                            max_tokens: Some(300),
+                                            temperature: Some(0.3),
+                                            timeout_seconds: Some(30),
+                                        }).await {
+                                            Ok(resp) => {
+                                                // Try parse JSON
+                                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp.content) {
+                                                    (
+                                                        json["title"].as_str().unwrap_or(&headline).to_string(),
+                                                        json["summary"].as_str().unwrap_or(&raw_summary).to_string()
+                                                    )
+                                                } else {
+                                                    // Fallback if JSON fails (rare with low temp)
+                                                    (headline, raw_summary)
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!("JIT refinement failed: {}", e);
+                                                (headline, raw_summary)
+                                            }
+                                        };
+
                                         // Send News Card
                                         let _ = stream.send(Message::Text(serde_json::to_string(&json!({
                                             "type": "news_item",
                                             "article": {
                                                 "id": article_id,
-                                                "title": headline,
+                                                "title": final_title,
                                                 "theme": theme,
-                                                "summary": summary,
+                                                "summary": final_summary,
                                                 "sources": [{
                                                     "name": source_name,
                                                     "url": url
@@ -185,8 +239,8 @@ pub fn chat_websocket(
                                         .execute(&pool)
                                         .await;
                                         
-                                        // Small delay for progressive effect (optional, but nice)
-                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                        // Small delay for progressive effect
+                                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                                     }
 
                                     // Final message
