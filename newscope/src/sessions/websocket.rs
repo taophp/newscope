@@ -244,12 +244,14 @@ pub fn chat_websocket(
                                     Content Snippet: {}
 
                                     Requirements:
-                                    1. Language: {} ONLY.
-                                    2. No truncation: Ensure the output is complete.
+                                    1. Language: {} ONLY (for the content).
+                                    2. No truncation: Keep the content complete.
                                     3. No Markdown: Output PLAIN TEXT only.
-                                    4. format: Use the exact format below:
+                                    4. Format: Use the exact format below. DO NOT translate the keywords TITLE and SUMMARY.
                                     TITLE: <title>
                                     SUMMARY: <summary>
+                                    5. No chatter: Do NOT add intro/outro text. Do NOT add notes like '(Note: ...)'.
+                                    6. STRICT: Return ONLY the TITLE and SUMMARY sections.
                                     ",
                                             match user_profile_lang.as_str() {
                                                 "fr" => "French",
@@ -276,26 +278,47 @@ pub fn chat_websocket(
                                             timeout_seconds: Some(45),
                                         }).await {
                                             Ok(resp) => {
+                                                // Robust parsing of TITLE: ... SUMMARY: ...
+                                                // We accept French variants as fallback if the model disobeys instructions
                                                 let content = resp.content.trim();
                                                 
-                                                // Robust parsing of TITLE: ... SUMMARY: ...
-                                                let title_marker = "TITLE:";
-                                                let summary_marker = "SUMMARY:";
+                                                let find_marker = |text: &str, markers: &[&str]| -> Option<(usize, usize)> {
+                                                    for m in markers {
+                                                        if let Some(idx) = text.find(m) {
+                                                            return Some((idx, m.len()));
+                                                        }
+                                                    }
+                                                    None
+                                                };
+
+                                                let title_marker = find_marker(content, &["TITLE:", "TITRE:", "Title:", "Titre:"]);
+                                                let summary_marker = find_marker(content, &["SUMMARY:", "RESUME:", "RÉSUMÉ:", "Summary:", "Resume:", "Résumé:"]);
                                                 
-                                                if let (Some(t_idx), Some(s_idx)) = (content.find(title_marker), content.find(summary_marker)) {
+                                                if let (Some((t_idx, t_len)), Some((s_idx, s_len))) = (title_marker, summary_marker) {
                                                     if t_idx < s_idx {
-                                                        let title_part = content[t_idx + title_marker.len()..s_idx].trim().to_string();
-                                                        let summary_part = content[s_idx + summary_marker.len()..].trim().to_string();
+                                                        let title_part = content[t_idx + t_len..s_idx].trim().to_string();
+                                                        let mut summary_part = content[s_idx + s_len..].trim().to_string();
+
+                                                        // Heuristic to strip common trailing notes if the model ignores checking
+                                                        // e.g. "(Note: ...)" "\nNote: ..."
+                                                        // We look for the last occurrence of such patterns if they are near the end
+                                                        if let Some(note_idx) = summary_part.rfind("(Note:") {
+                                                            if note_idx > 10 { summary_part.truncate(note_idx); }
+                                                        } else if let Some(note_idx) = summary_part.rfind("(Nota:") {
+                                                            if note_idx > 10 { summary_part.truncate(note_idx); }
+                                                        } else if let Some(note_idx) = summary_part.rfind("\nNote:") {
+                                                            if note_idx > 10 { summary_part.truncate(note_idx); }
+                                                        }
+
+                                                        let summary_clean = summary_part.trim().to_string();
                                                         
-                                                        if !title_part.is_empty() && !summary_part.is_empty() {
-                                                             (title_part, summary_part, user_profile_lang.clone())
+                                                        if !title_part.is_empty() && !summary_clean.is_empty() {
+                                                             (title_part, summary_clean, user_profile_lang.clone())
                                                         } else {
-                                                            // Parsed empty fields? unlikely but fallback
                                                             error!("JIT Refinement: parsed empty fields");
                                                             (headline.clone(), raw_summary.clone(), article_lang.clone())
                                                         }
                                                     } else {
-                                                        // Markers out of order
                                                         error!("JIT Refinement: markers out of order");
                                                         (headline.clone(), raw_summary.clone(), article_lang.clone())
                                                     }

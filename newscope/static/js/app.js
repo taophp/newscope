@@ -6,6 +6,7 @@ const App = {
   currentSession: null,
 
   init() {
+    this.userHasInteracted = false;
     // Hide loading, check auth
     document.getElementById("loading-screen").classList.add("hidden");
 
@@ -510,7 +511,8 @@ const App = {
       }
 
       feedContainer.appendChild(card);
-      container.scrollTop = container.scrollHeight;
+      // Removed auto-scroll to allow user to read previous cards
+
 
       // Send system notification if page is hidden (only for the first card to avoid spam?)
       if (
@@ -553,8 +555,7 @@ const App = {
         }
         feedContainer.appendChild(updatedCard);
       }
-
-      container.scrollTop = container.scrollHeight;
+      // Removed auto-scroll
     } else if (data.type === "message" && data.content) {
       // Hide progress and show new message from server
       this.hideProgress();
@@ -692,7 +693,23 @@ const App = {
         `;
 
     container.appendChild(messageDiv);
-    container.scrollTop = container.scrollHeight;
+
+    // Auto-scroll logic:
+    // Only scroll if the user has actively interacted with the chat.
+    // This prevents the view from jumping to the bottom while the initial 
+    // press review (cards + completion msg) is loading, allowing the user 
+    // to read cards at their own pace.
+    if (author === "user") {
+      this.setupIntersectionObserver();
+      this.userHasInteracted = false; // Track if user has started chatting
+
+      // Check for active session in URL
+      const urlParams = new URLSearchParams(window.location.search);
+    }
+
+    if (this.userHasInteracted) {
+      container.scrollTop = container.scrollHeight;
+    }
   },
 
   renderSourceItem(s, inline = false) {
@@ -933,7 +950,9 @@ const App = {
             link.rel = "noopener noreferrer";
 
             const img = document.createElement("img");
-            img.src = `https://www.google.com/s2/favicons?domain=${domain}`;
+            // Use direct favicon from the site root to avoid third-party services (Google).
+            // This is a naive approach but respects privacy.
+            img.src = `${new URL(urlToUse).protocol}//${domain}/favicon.ico`;
             img.className = "source-icon";
             img.title = source.name || domain;
 
