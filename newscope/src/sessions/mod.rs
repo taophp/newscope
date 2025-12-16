@@ -12,6 +12,7 @@ pub struct Session {
     pub start_at: DateTime<Utc>,
     pub duration_requested_seconds: Option<i32>,
     pub digest_summary_id: Option<i64>,
+    pub title: Option<String>,
 }
 
 /// ChatMessage represents a single message in a conversation
@@ -46,16 +47,6 @@ pub async fn create_session(
 
     let session_id = result.last_insert_rowid();
 
-    // Update last_login for user
-    /*
-    sqlx::query("UPDATE users SET last_login = ? WHERE id = ?")
-        .bind(Utc::now())
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .context("Failed to update user last_login")?;
-    */
-
     // Fetch the created session
     get_session(pool, session_id).await
 }
@@ -64,7 +55,7 @@ pub async fn create_session(
 pub async fn get_session(pool: &SqlitePool, session_id: i64) -> Result<Session> {
     let session = sqlx::query_as::<_, SessionRow>(
         r#"
-        SELECT id, user_id, start_at, duration_requested_seconds, digest_summary_id
+        SELECT id, user_id, start_at, duration_requested_seconds, digest_summary_id, title
         FROM sessions
         WHERE id = ?
         "#,
@@ -82,6 +73,7 @@ pub async fn get_session(pool: &SqlitePool, session_id: i64) -> Result<Session> 
             .with_timezone(&Utc),
         duration_requested_seconds: session.duration_requested_seconds,
         digest_summary_id: session.digest_summary_id,
+        title: session.title,
     })
 }
 
@@ -89,7 +81,7 @@ pub async fn get_session(pool: &SqlitePool, session_id: i64) -> Result<Session> 
 pub async fn list_sessions(pool: &SqlitePool, user_id: i64) -> Result<Vec<Session>> {
     let rows = sqlx::query_as::<_, SessionRow>(
         r#"
-        SELECT id, user_id, start_at, duration_requested_seconds, digest_summary_id
+        SELECT id, user_id, start_at, duration_requested_seconds, digest_summary_id, title
         FROM sessions
         WHERE user_id = ?
         ORDER BY start_at DESC
@@ -110,9 +102,25 @@ pub async fn list_sessions(pool: &SqlitePool, user_id: i64) -> Result<Vec<Sessio
                     .with_timezone(&Utc),
                 duration_requested_seconds: row.duration_requested_seconds,
                 digest_summary_id: row.digest_summary_id,
+                title: row.title,
             })
         })
         .collect()
+}
+
+/// Update session title
+pub async fn update_session_title(
+    pool: &SqlitePool,
+    session_id: i64,
+    title: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
+        .bind(title)
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .context("Failed to update session title")?;
+    Ok(())
 }
 
 /// Get session with full chat message history
@@ -209,6 +217,7 @@ struct SessionRow {
     start_at: String,
     duration_requested_seconds: Option<i32>,
     digest_summary_id: Option<i64>,
+    title: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]

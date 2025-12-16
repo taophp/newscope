@@ -6,6 +6,7 @@ pub struct UserProfile {
     pub id: i64,
     pub language: String,
     pub complexity_level: String,
+    pub reading_speed: i32, // Words per minute
     pub interests: Vec<String>,
     pub preferred_categories: Vec<String>,
     pub keyword_boosts: std::collections::HashMap<String, f32>,
@@ -219,6 +220,7 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
             u.id,
             COALESCE(up.language, 'en') as language,
             COALESCE(up.complexity_level, 'medium') as complexity_level,
+            COALESCE(up.reading_speed, 250) as reading_speed,
             up.interests
          FROM users u
          LEFT JOIN user_preferences up ON u.id = up.user_id
@@ -233,6 +235,7 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
     let id: i64 = row.get("id");
     let language: String = row.get("language");
     let complexity_level: String = row.get("complexity_level");
+    let reading_speed: i32 = row.get("reading_speed");
 
     let interests: Vec<String> = row
         .try_get::<String, _>("interests")
@@ -249,6 +252,7 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
         id,
         language,
         complexity_level,
+        reading_speed,
         interests,
         preferred_categories,
         keyword_boosts,

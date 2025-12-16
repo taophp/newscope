@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -16,19 +16,19 @@ pub async fn personalize_for_users(
     llm_provider: Arc<dyn LlmProvider>,
     model: &str,
 ) -> Result<usize> {
-    // Get all active users with preferences (those who have language set)
-    info!("Fetching users with preferences for article personalization");
-    let users = sqlx::query(
-        "SELECT DISTINCT u.id 
-         FROM users u 
-         JOIN user_preferences up ON u.id = up.user_id 
-         WHERE up.language IS NOT NULL"
-    )
-    .fetch_all(pool)
-    .await
-    .context("Failed to fetch active users")?;
+    // Get all active users (include users without explicit preferences)
+    info!(
+        "Fetching users for article personalization (including users without explicit preferences)"
+    );
+    let users = sqlx::query("SELECT DISTINCT u.id FROM users u")
+        .fetch_all(pool)
+        .await
+        .context("Failed to fetch active users")?;
 
-    info!("Found {} users with preferences for personalization", users.len());
+    info!(
+        "Found {} users with preferences for personalization",
+        users.len()
+    );
 
     if users.is_empty() {
         info!("No active users to personalize for");
@@ -51,22 +51,19 @@ pub async fn personalize_for_users(
         };
 
         // 1. Evaluate relevance
-        let relevance = match evaluate_article_relevance(
-            llm_provider.as_ref(),
-            generic_summary,
-            &user_profile,
-        )
-        .await
-        {
-            Ok(eval) => eval,
-            Err(e) => {
-                warn!(
-                    "Failed to evaluate relevance for user {} article {}: {}",
-                    user_id, article_id, e
-                );
-                continue;
-            }
-        };
+        let relevance =
+            match evaluate_article_relevance(llm_provider.as_ref(), generic_summary, &user_profile)
+                .await
+            {
+                Ok(eval) => eval,
+                Err(e) => {
+                    warn!(
+                        "Failed to evaluate relevance for user {} article {}: {}",
+                        user_id, article_id, e
+                    );
+                    continue;
+                }
+            };
 
         // Skip if not relevant (score < 0.3)
         if relevance.score < 0.3 {
@@ -101,12 +98,12 @@ pub async fn personalize_for_users(
         let bullets_json = serde_json::to_string(&personalized.bullets)?;
 
         match sqlx::query(
-            "INSERT OR REPLACE INTO user_article_summaries 
+            "INSERT OR REPLACE INTO user_article_summaries
              (user_id, article_id, relevance_score, relevance_reasons, is_relevant,
               personalized_headline, personalized_bullets, personalized_details,
-              language, complexity_level, summary_length, llm_model, 
+              language, complexity_level, summary_length, llm_model,
               prompt_tokens, completion_tokens)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(user_id)
         .bind(article_id)

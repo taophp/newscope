@@ -15,8 +15,8 @@
     --error: #ef4444;
 
     /* Typography */
-    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
+    --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", monospace;
 
     /* Spacing */
     --space-xs: 0.25rem;
@@ -806,7 +806,7 @@ input[type="range"] {
     }
 
     40% {
-        transform: scale(1.0);
+        transform: scale(1);
     }
 }
 
@@ -833,7 +833,9 @@ input[type="range"] {
 }
 
 .collapsible-content {
-    transition: max-height 0.3s ease-out, opacity 0.3s ease-out;
+    transition:
+        max-height 0.3s ease-out,
+        opacity 0.3s ease-out;
     max-height: 2000px;
     /* Arbitrary large value */
     opacity: 1;
@@ -847,12 +849,69 @@ input[type="range"] {
     padding: 0;
 }
 
+/* Session List Items */
+.session-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.session-item:hover {
+    background-color: var(--bg-secondary);
+}
+
+.session-info {
+    flex: 1;
+    min-width: 0;
+    /* Truncate text */
+}
+
+.session-info .feed-title {
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.session-info .feed-url {
+    font-size: 0.8em;
+    color: var(--text-secondary);
+}
+
+.btn-rename-session {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    opacity: 0;
+    /* Hidden by default */
+    transition:
+        opacity 0.2s,
+        background-color 0.2s;
+}
+
+.session-item:hover .btn-rename-session {
+    opacity: 1;
+}
+
+.btn-rename-session:hover {
+    background-color: var(--border);
+    color: var(--text-primary);
+}
+
 /* === News Card UI === */
 .news-feed-container {
     display: flex;
+    flex-direction: row;
     flex-wrap: wrap;
     gap: 20px;
-    width: 100%;
+    padding-bottom: 20px;
     align-items: flex-start;
 }
 
@@ -861,9 +920,11 @@ input[type="range"] {
     border-radius: 12px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
     padding: 20px;
-    max-width: calc(35em + 40px);
-    /* 35em content + 20px padding on each side */
-    width: fit-content;
+    width: calc(35em + 40px);
+    max-width: 100%;
+    /* Fixed width, do not grow/shrink */
+    flex: 0 0 auto;
+    box-sizing: border-box;
     border: 1px solid var(--border);
     /* Animation for appearance */
     animation: slideIn 0.4s ease-out;
@@ -911,7 +972,10 @@ input[type="range"] {
     line-height: 1.6;
     color: var(--text-primary);
     margin-bottom: 20px;
-    max-width: 35em;
+}
+
+.card-content p {
+    width: 35em;
 }
 
 .card-footer {
@@ -955,7 +1019,8 @@ input[type="range"] {
 }
 
 .star:hover,
-.star:hover~.star {
+.star:hover~.star,
+.star.active {
     color: #fbbf24;
 }
 

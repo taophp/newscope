@@ -3,13 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rocket::http::Status;
-use rocket::request::{FromRequest, Outcome, Request};
-use rocket::serde::json::Json;
-use rocket::{get, post, routes, State};
-use rocket::fs::FileServer;
-use serde::{Deserialize, Serialize};
 use rocket::data::{Data, ToByteUnit};
+use rocket::fs::FileServer;
+use rocket::http::Status;
+use rocket::serde::json::Json;
+use rocket::{get, post, put, routes, State};
+use serde::{Deserialize, Serialize};
 
 use sqlx::{Row, SqlitePool};
 use tracing::error;
@@ -21,9 +20,7 @@ use crate::{ingestion, storage};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use jsonwebtoken::{
-    decode, encode, DecodingKey, EncodingKey, Header as JwtHeader, TokenData, Validation,
-};
+use jsonwebtoken::{encode, EncodingKey, Header as JwtHeader};
 use rand::rngs::OsRng;
 
 /// Application state stored inside Rocket managed state.
@@ -105,7 +102,6 @@ struct StatsResponse {
     avg_processing_time_ms: f64,
 }
 
-
 use rocket::response::Redirect;
 
 /// Redirect root to static index.html
@@ -113,7 +109,6 @@ use rocket::response::Redirect;
 async fn index_redirect() -> Redirect {
     Redirect::to("/static/index.html")
 }
-
 
 #[get("/health")]
 async fn health() -> &'static str {
@@ -143,7 +138,7 @@ async fn status(state: &State<AppState>) -> Json<StatusResponse> {
 #[get("/api/jobs")]
 async fn list_jobs(state: &State<AppState>) -> std::result::Result<Json<Vec<JobRow>>, Status> {
     let jobs = sqlx::query_as::<_, JobRow>(
-        "SELECT * FROM processing_jobs ORDER BY created_at DESC LIMIT 50"
+        "SELECT * FROM processing_jobs ORDER BY created_at DESC LIMIT 50",
     )
     .fetch_all(&state.db)
     .await
@@ -160,15 +155,15 @@ async fn list_jobs(state: &State<AppState>) -> std::result::Result<Json<Vec<JobR
 async fn get_stats(state: &State<AppState>) -> std::result::Result<Json<StatsResponse>, Status> {
     let row = sqlx::query(
         r#"
-        SELECT 
-            COUNT(*) as count, 
-            COALESCE(SUM(prompt_tokens), 0) as prompts, 
-            COALESCE(SUM(completion_tokens), 0) as completions, 
-            COALESCE(AVG(processing_time_ms), 0.0) as avg_time 
-        FROM processing_jobs 
-        WHERE status = 'completed' 
+        SELECT
+            COUNT(*) as count,
+            COALESCE(SUM(prompt_tokens), 0) as prompts,
+            COALESCE(SUM(completion_tokens), 0) as completions,
+            COALESCE(AVG(processing_time_ms), 0.0) as avg_time
+        FROM processing_jobs
+        WHERE status = 'completed'
         AND completed_at > datetime('now', '-24 hours')
-        "#
+        "#,
     )
     .fetch_one(&state.db)
     .await
@@ -203,40 +198,46 @@ async fn list_users(state: &State<AppState>) -> Json<serde_json::Value> {
 
 /// List feeds stored in the database for the current user.
 #[get("/api/v1/feeds?<user_id>")]
-async fn list_feeds(state: &State<AppState>, user_id: Option<i64>) -> Result<Json<Vec<FeedRow>>, Status> {
-    // TODO: proper auth guard. For now we rely on the fact that this is a personal instance
-    // or we should extract user_id from token if we had a guard.
-    // Since we don't have a guard in this signature, we can't easily filter by user without passing it.
-    // However, the previous implementation didn't filter by user in the query (it returned all feeds).
-    // But now we have subscriptions. We should probably require auth.
-    // For MVP/Dev without strict auth guard, let's just return all subscriptions if no user_id is implicit?
-    // Actually, the previous `list_feeds` didn't take any auth args, so it listed EVERYTHING.
-    // We will keep it simple: list all subscriptions for now, or if we can, filter.
-    // But `FeedRow` expects `user_id`.
-    
+async fn list_feeds(
+    state: &State<AppState>,
+    user_id: Option<i64>,
+) -> Result<Json<Vec<FeedRow>>, Status> {
+    // Require a user_id to avoid exposing all subscriptions to unauthenticated callers.
+    // In a real deployment we'd extract the user from an auth guard; for now we
+    // use the optional query param and refuse to return everything when it's missing.
     let pool = &state.db;
-    // Query subscriptions joined with feeds
-    let rows = sqlx::query(
-        r#"
-        SELECT 
-            f.id as feed_id, 
-            s.id as sub_id,
-            s.user_id, 
-            f.url, 
-            s.title, 
-            f.last_checked, 
-            f.status, 
-            s.weight 
-        FROM subscriptions s
-        JOIN feeds f ON s.feed_id = f.id
-        "#
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("failed to query feeds: {}", e);
-        Status::InternalServerError
-    })?;
+
+    // If user_id is provided, return subscriptions for that user only.
+    // If missing, return an empty list to avoid exposing other users' subscriptions.
+    let rows = if let Some(uid) = user_id {
+        // Query subscriptions joined with feeds for a specific user
+        sqlx::query(
+            r#"
+            SELECT
+                f.id as feed_id,
+                s.id as sub_id,
+                s.user_id,
+                f.url,
+                s.title,
+                f.last_checked,
+                f.status,
+                s.weight
+            FROM subscriptions s
+            JOIN feeds f ON s.feed_id = f.id
+            WHERE s.user_id = ?
+            "#,
+        )
+        .bind(uid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("failed to query feeds for user {}: {}", uid, e);
+            Status::InternalServerError
+        })?
+    } else {
+        // No user id provided: return empty list (do not leak all subscriptions)
+        Vec::new()
+    };
 
     let feeds = rows
         .into_iter()
@@ -277,25 +278,14 @@ struct Claims {
     exp: usize,
 }
 
-/// Authentication note: token-based auth is handled by decoding a token passed in request bodies
-/// (field `token`) for endpoints that accept it. A Rocket request guard implementation for
-/// `AuthUser` was causing incompatibilities with the Rocket version's Outcome alias/generics
-/// in this codebase. To keep the code stable and portable across toolchains, we avoid an inline
-/// FromRequest implementation here.
+/// Authentication note: for backwards compatibility with the current Rocket version in this
+/// repository, we do not use a FromRequest request-guard implementation here. Instead, routes
+/// that accept a token will decode it from the request body (`token` field) when necessary.
+/// If you later upgrade Rocket and reintroduce a request guard, implement `FromRequest` that
+/// returns the correct `Outcome` type for your Rocket version.
 ///
-/// If you want to reintroduce a request guard in the future, implement `FromRequest` that
-/// returns the `rocket::request::Outcome<'r, Self, Self::Error>` type (or the alias expected by
-/// your Rocket version) and use `Outcome::Success(...)` / `Outcome::Failure((Status, error))`
-/// or `Outcome::Forward(...)` as appropriate. Also ensure you import the right symbols:
-///   use rocket::request::{FromRequest, Outcome, Request};
-/// and use `rocket::outcome::Outcome` / `rocket::request::Outcome` consistent with your Rocket crate.
-///
-/// For now, handlers decode the JWT from JSON payloads (field `token`) or accept explicit
-/// `user_id` in the request body so authentication works without a guard.
-struct AuthUser {
-    // placeholder type kept for compatibility with other code sections.
-    user_id: i64,
-}
+/// The design decision keeps handler signatures simple and avoids compatibility issues
+/// with differing Rocket versions' Outcome generics.
 
 /// Create a signed JWT for a user id.
 /// Expiration is configurable; default 24h.
@@ -354,10 +344,10 @@ async fn register(
     // Auto-create user preferences with browser language
     let browser_lang = &accept_lang.0;
     let default_interests = serde_json::json!(["technology", "science", "news"]).to_string();
-    
+
     let _ = sqlx::query(
-        "INSERT INTO user_preferences 
-         (user_id, preference_type, preference_key, preference_value, language, complexity_level, interests) 
+        "INSERT INTO user_preferences
+         (user_id, preference_type, preference_key, preference_value, language, complexity_level, interests)
          VALUES (?, 'profile', 'default', 1.0, ?, 'medium', ?)"
     )
     .bind(user_id)
@@ -382,6 +372,37 @@ async fn register(
 }
 
 /// Login endpoint: verify password and return JWT.
+
+/// Request body for logout (soft logout / token revocation)
+#[derive(Deserialize)]
+struct LogoutRequest {
+    token: String,
+}
+
+/// Logout endpoint: soft-revoke a JWT by storing it in `revoked_tokens`.
+/// The client should POST { "token": "<jwt>" } to this endpoint when the user logs out.
+/// The server must check `revoked_tokens` when validating tokens (not shown here).
+#[post("/api/v1/logout", data = "<body>")]
+async fn logout(state: &State<AppState>, body: Json<LogoutRequest>) -> Result<Status, Status> {
+    let pool = &state.db;
+
+    // Store the token in the revoked_tokens table (idempotent).
+    let res = sqlx::query("INSERT OR REPLACE INTO revoked_tokens (token) VALUES (?)")
+        .bind(&body.token)
+        .execute(pool)
+        .await;
+
+    match res {
+        Ok(_) => {
+            tracing::info!("token revoked via logout");
+            Ok(Status::Ok)
+        }
+        Err(e) => {
+            tracing::error!("failed to revoke token: {}", e);
+            Err(Status::InternalServerError)
+        }
+    }
+}
 #[post("/api/v1/login", data = "<body>")]
 async fn login(
     state: &State<AppState>,
@@ -516,7 +537,7 @@ async fn create_feed(
             Some(t) if !t.is_empty() => Some(t.to_string()),
             _ => auto_extract_feed_title(&body.url).await,
         };
-        
+
         // Create new feed with next_poll_at = NULL to trigger immediate polling
         let res = sqlx::query("INSERT INTO feeds (url, title, next_poll_at) VALUES (?, ?, NULL)")
             .bind(&body.url)
@@ -532,19 +553,23 @@ async fn create_feed(
 
     // 2. Create subscription
     // Check if subscription already exists
-    let sub_exists = sqlx::query_scalar::<_, i64>("SELECT id FROM subscriptions WHERE user_id = ? AND feed_id = ?")
-        .bind(user_id)
-        .bind(feed_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error checking subscription: {}", e);
-            Status::InternalServerError
-        })?;
+    let sub_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM subscriptions WHERE user_id = ? AND feed_id = ?",
+    )
+    .bind(user_id)
+    .bind(feed_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error checking subscription: {}", e);
+        Status::InternalServerError
+    })?;
 
     if sub_exists.is_some() {
         // Already subscribed, return success (idempotent-ish)
-        return Ok(Json(serde_json::json!({ "id": feed_id, "subscription_id": sub_exists.unwrap(), "message": "Already subscribed" })));
+        return Ok(Json(
+            serde_json::json!({ "id": feed_id, "subscription_id": sub_exists.unwrap(), "message": "Already subscribed" }),
+        ));
     }
 
     let res = sqlx::query("INSERT INTO subscriptions (user_id, feed_id, title) VALUES (?, ?, ?)")
@@ -559,7 +584,9 @@ async fn create_feed(
         })?;
 
     let sub_id = res.last_insert_rowid();
-    Ok(Json(serde_json::json!({ "id": feed_id, "subscription_id": sub_id })))
+    Ok(Json(
+        serde_json::json!({ "id": feed_id, "subscription_id": sub_id }),
+    ))
 }
 
 /// Import feeds from OPML file
@@ -572,13 +599,10 @@ async fn import_opds(
     let pool = &state.db;
 
     // Read uploaded file (limit to 10MB)
-    let bytes = data.open(10.megabytes())
-        .into_bytes()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to read upload: {}", e);
-            Status::BadRequest
-        })?;
+    let bytes = data.open(10.megabytes()).into_bytes().await.map_err(|e| {
+        tracing::error!("Failed to read upload: {}", e);
+        Status::BadRequest
+    })?;
 
     if !bytes.is_complete() {
         tracing::error!("Upload too large");
@@ -586,10 +610,10 @@ async fn import_opds(
     }
 
     let content = bytes.into_inner();
-    
+
     // Parse OPML using quick-xml
-    use quick_xml::Reader;
     use quick_xml::events::Event;
+    use quick_xml::Reader;
 
     let mut reader = Reader::from_reader(&content[..]);
     reader.trim_text(true);
@@ -658,12 +682,12 @@ async fn import_opds(
 
                             // Create subscription if not exists
                             match sqlx::query_scalar::<_, i64>(
-                                "SELECT id FROM subscriptions WHERE user_id = ? AND feed_id = ?"
+                                "SELECT id FROM subscriptions WHERE user_id = ? AND feed_id = ?",
                             )
-                                .bind(user_id)
-                                .bind(feed_id)
-                                .fetch_optional(pool)
-                                .await
+                            .bind(user_id)
+                            .bind(feed_id)
+                            .fetch_optional(pool)
+                            .await
                             {
                                 Ok(Some(_)) => {
                                     duplicates += 1;
@@ -686,7 +710,10 @@ async fn import_opds(
                                     }
                                 }
                                 Err(e) => {
-                                    errors.push(format!("DB error checking subscription for {}: {}", url, e));
+                                    errors.push(format!(
+                                        "DB error checking subscription for {}: {}",
+                                        url, e
+                                    ));
                                 }
                             }
                         }
@@ -728,17 +755,19 @@ async fn trigger_fetch(state: &State<AppState>, req: Json<FetchRequest>) -> Resu
     let pool = state.db.clone();
     let config = state.config.clone();
     let llm_provider = state.llm_provider.clone();
-    
+
     // Spawn a background task to fetch and parse the feed
     tokio::spawn(async move {
         tracing::info!("manual fetch: triggered for feed id {}", feed_id);
-        
+
         // Get feed URL
-        let feed_row = sqlx::query("SELECT url, poll_interval_minutes, adaptive_scheduling FROM feeds WHERE id = ?")
-            .bind(feed_id)
-            .fetch_optional(&pool)
-            .await;
-            
+        let feed_row = sqlx::query(
+            "SELECT url, poll_interval_minutes, adaptive_scheduling FROM feeds WHERE id = ?",
+        )
+        .bind(feed_id)
+        .fetch_optional(&pool)
+        .await;
+
         let (url, mut interval, adaptive) = match feed_row {
             Ok(Some(row)) => {
                 let url: String = row.try_get("url").unwrap_or_default();
@@ -755,49 +784,63 @@ async fn trigger_fetch(state: &State<AppState>, req: Json<FetchRequest>) -> Resu
                 return;
             }
         };
-        
+
         // Fetch and parse feed
         let timeout = config
             .as_ref()
             .and_then(|c| c.politeness.as_ref())
             .and_then(|p| p.fetch_timeout_seconds)
             .unwrap_or(10);
-            
+
         let fetch_result = ingestion::fetch_and_parse_feed(&url, timeout).await;
-        
+
         let mut new_items_found = false;
         let fetch_success = fetch_result.is_ok();
-        
+
         match fetch_result {
             Ok(feed) => {
-                tracing::info!("manual fetch: successfully fetched feed {}, found {} items", feed_id, feed.entries.len());
-                
+                tracing::info!(
+                    "manual fetch: successfully fetched feed {}, found {} items",
+                    feed_id,
+                    feed.entries.len()
+                );
+
                 match storage::store_feed_items(&pool, feed_id, &feed.entries).await {
                     Ok(new_article_ids) => {
                         let new_count = new_article_ids.len();
                         if new_count > 0 {
                             new_items_found = true;
-                            tracing::info!("manual fetch: stored {} new articles for feed {}", new_count, feed_id);
-                            
+                            tracing::info!(
+                                "manual fetch: stored {} new articles for feed {}",
+                                new_count,
+                                feed_id
+                            );
+
                             // Process articles with LLM if available
                             if let Some(llm_prov) = llm_provider.clone() {
                                 let pool_clone = pool.clone();
-                                let model = config.as_ref()
+                                let model = config
+                                    .as_ref()
                                     .and_then(|c| c.llm.as_ref())
                                     .and_then(|l| l.remote.as_ref())
                                     .and_then(|r| r.model.as_deref())
                                     .unwrap_or("unknown")
                                     .to_string();
                                 let ids = new_article_ids.clone();
-                                
+
                                 tokio::spawn(async move {
                                     if let Err(e) = crate::processing::batch_process_articles(
                                         &pool_clone,
                                         &ids,
                                         llm_prov,
-                                        &model
-                                    ).await {
-                                        tracing::error!("manual fetch: failed to process articles: {}", e);
+                                        &model,
+                                    )
+                                    .await
+                                    {
+                                        tracing::error!(
+                                            "manual fetch: failed to process articles: {}",
+                                            e
+                                        );
                                     }
                                 });
                             }
@@ -806,7 +849,11 @@ async fn trigger_fetch(state: &State<AppState>, req: Json<FetchRequest>) -> Resu
                         }
                     }
                     Err(e) => {
-                        tracing::error!("manual fetch: failed to store items for feed {}: {}", feed_id, e);
+                        tracing::error!(
+                            "manual fetch: failed to store items for feed {}: {}",
+                            feed_id,
+                            e
+                        );
                     }
                 }
             }
@@ -814,7 +861,7 @@ async fn trigger_fetch(state: &State<AppState>, req: Json<FetchRequest>) -> Resu
                 tracing::error!("manual fetch: failed to fetch feed {}: {}", feed_id, e);
             }
         }
-        
+
         // Adaptive logic (same as worker)
         if adaptive && fetch_success {
             if new_items_found {
@@ -823,11 +870,11 @@ async fn trigger_fetch(state: &State<AppState>, req: Json<FetchRequest>) -> Resu
                 interval = (interval + (interval / 2)).min(1440);
             }
         }
-        
+
         // Calculate next poll time and update DB
         let now = chrono::Utc::now();
         let next_poll = now + chrono::Duration::minutes(interval);
-        
+
         if let Err(e) = sqlx::query(
             "UPDATE feeds SET next_poll_at = ?, poll_interval_minutes = ?, last_checked = ? WHERE id = ?"
         )
@@ -868,10 +915,49 @@ async fn create_session(
     body: Json<CreateSessionRequest>,
 ) -> Result<Json<crate::sessions::Session>, Status> {
     let pool = &state.db;
-    crate::sessions::create_session(&state.db, body.user_id, body.duration_seconds)
-        .await
-        .map(Json)
-        .map_err(|_| Status::InternalServerError)
+    let user_id = body.user_id;
+
+    // Prevent creating a session for a user who has no subscriptions.
+    // New users should not see other users' feeds and must add at least one feed before starting a session.
+    let subs_count_res =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM subscriptions WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await;
+
+    let subs_count = match subs_count_res {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                "db error while checking subscriptions for user {}: {}",
+                user_id,
+                e
+            );
+            return Err(Status::InternalServerError);
+        }
+    };
+
+    if subs_count == 0 {
+        tracing::warn!(
+            "user {} attempted to create a session but has no subscriptions",
+            user_id
+        );
+        // Bad request: user must add subscriptions before creating a session
+        return Err(Status::BadRequest);
+    }
+
+    match crate::sessions::create_session(&state.db, user_id, body.duration_seconds).await {
+        Ok(session) => Ok(Json(session)),
+        Err(e) => {
+            tracing::error!(
+                "create_session failed for user_id={} duration_seconds={:?}: {:?}",
+                user_id,
+                body.duration_seconds,
+                e
+            );
+            Err(Status::InternalServerError)
+        }
+    }
 }
 
 #[get("/api/v1/sessions?<user_id>")]
@@ -896,25 +982,45 @@ async fn get_session(
         .map_err(|_| Status::InternalServerError)
 }
 
+#[derive(Deserialize)]
+struct UpdateSessionRequest {
+    title: String,
+}
+
+#[put("/api/v1/sessions/<session_id>", data = "<body>")]
+async fn update_session(
+    state: &State<AppState>,
+    session_id: i64,
+    body: Json<UpdateSessionRequest>,
+) -> Result<Status, Status> {
+    crate::sessions::update_session_title(&state.db, session_id, &body.title)
+        .await
+        .map(|_| Status::Ok)
+        .map_err(|_| Status::InternalServerError)
+}
+
 /// Trigger processing of pending articles
 #[post("/api/v1/process-pending")]
 async fn process_pending(state: &State<AppState>) -> Status {
     let pool = state.db.clone();
     let llm_provider = state.llm_provider.clone();
     let config = state.config.clone();
-    
+
     tokio::spawn(async move {
         tracing::info!("Manual trigger: processing pending articles");
-        
+
         if let Some(llm_prov) = llm_provider {
-            let model = config.as_ref()
+            let model = config
+                .as_ref()
                 .and_then(|c| c.llm.as_ref())
                 .and_then(|l| l.remote.as_ref())
                 .and_then(|r| r.model.as_deref())
                 .unwrap_or("unknown")
                 .to_string();
-            
-            match crate::processing::process_pending_articles(&pool, llm_prov, &model, Some(50)).await {
+
+            match crate::processing::process_pending_articles(&pool, llm_prov, &model, Some(50))
+                .await
+            {
                 Ok(count) => tracing::info!("Processed {} pending articles", count),
                 Err(e) => tracing::error!("Failed to process pending articles: {:?}", e),
             }
@@ -922,10 +1028,9 @@ async fn process_pending(state: &State<AppState>) -> Status {
             tracing::warn!("No LLM provider configured, cannot process articles");
         }
     });
-    
+
     Status::Accepted
 }
-
 
 // ============================================================================
 // Database Schema Management
@@ -938,22 +1043,26 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
     // Check for migration: if `feeds` table has `user_id` column, it's the old schema.
     // We use pragma_table_info to check columns.
     let needs_migration = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name='user_id'"
+        "SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name='user_id'",
     )
     .fetch_optional(pool)
     .await
     .unwrap_or(None)
-    .unwrap_or(0) > 0;
+    .unwrap_or(0)
+        > 0;
 
     if needs_migration {
         tracing::info!("Newscope server starting"); // Added based on Code Edit, simplified for syntactic correctness
         tracing::info!("server: detecting old schema (feeds.user_id exists), migrating...");
         // Rename old table
-        sqlx::query("ALTER TABLE feeds RENAME TO feeds_old").execute(pool).await?;
-        
+        sqlx::query("ALTER TABLE feeds RENAME TO feeds_old")
+            .execute(pool)
+            .await?;
+
         // Create new tables (we'll do this via the standard stmts loop below, but we need to ensure they are created before data migration)
         // Actually, let's just create them here to be safe and populate them.
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS feeds (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL UNIQUE,
@@ -966,9 +1075,13 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
                 adaptive_scheduling BOOLEAN DEFAULT TRUE,
                 weight INTEGER DEFAULT 0
             );
-        "#).execute(pool).await?;
+        "#,
+        )
+        .execute(pool)
+        .await?;
 
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -980,23 +1093,34 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
                 FOREIGN KEY(feed_id) REFERENCES feeds(id) ON DELETE CASCADE,
                 UNIQUE(user_id, feed_id)
             );
-        "#).execute(pool).await?;
+        "#,
+        )
+        .execute(pool)
+        .await?;
 
         // Migrate data
         tracing::info!("server: migrating data from feeds_old...");
         // Insert unique feeds
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             INSERT OR IGNORE INTO feeds (url, site_url, title, last_checked, status, weight)
             SELECT url, site_url, title, last_checked, status, weight FROM feeds_old
-        "#).execute(pool).await?;
+        "#,
+        )
+        .execute(pool)
+        .await?;
 
         // Insert subscriptions
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             INSERT INTO subscriptions (user_id, feed_id, title, weight)
             SELECT fo.user_id, f.id, fo.title, fo.weight
             FROM feeds_old fo
             JOIN feeds f ON fo.url = f.url
-        "#).execute(pool).await?;
+        "#,
+        )
+        .execute(pool)
+        .await?;
 
         // Drop old table
         sqlx::query("DROP TABLE feeds_old").execute(pool).await?;
@@ -1134,13 +1258,29 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
     }
 
     // Idempotent migrations for new columns
+    // Ensure revoked_tokens exists for soft logout / token revocation
+    // This table stores JWTs that have been explicitly revoked so that the server can
+    // refuse tokens that were issued but then invalidated by a logout action.
+    if let Err(e) = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS revoked_tokens (
+            token TEXT PRIMARY KEY,
+            revoked_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        )",
+    )
+    .execute(pool)
+    .await
+    {
+        tracing::error!("failed to ensure revoked_tokens table: {}", e);
+    }
+
     // Add processing_status to articles if it doesn't exist
     let has_processing_status = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM pragma_table_info('articles') WHERE name='processing_status'"
+        "SELECT COUNT(*) FROM pragma_table_info('articles') WHERE name='processing_status'",
     )
     .fetch_one(pool)
     .await
-    .unwrap_or(0) > 0;
+    .unwrap_or(0)
+        > 0;
 
     if !has_processing_status {
         tracing::info!("Adding processing_status column to articles table");
@@ -1148,7 +1288,7 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
             .execute(pool)
             .await
             .context("Failed to add processing_status column")?;
-        
+
         sqlx::query("ALTER TABLE articles ADD COLUMN processed_at TIMESTAMP")
             .execute(pool)
             .await
@@ -1172,28 +1312,39 @@ pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>
     // The DB pool and optional application config are provided by the caller.
     // The server must not re-init or migrate the database here; migrations and pool
     // creation are the responsibility of the process startup code (main).
-    
+
     // Initialize LLM provider if configured
     let llm_provider: Option<Arc<dyn crate::llm::LlmProvider>> = if let Some(ref cfg) = config {
         if let Some(ref llm_config) = cfg.llm {
             if llm_config.adapter.as_deref() == Some("remote") {
                 if let Some(ref remote_cfg) = llm_config.remote {
-                    if let (Some(api_url), Some(api_key_env)) = (&remote_cfg.api_url, &remote_cfg.api_key_env) {
+                    if let (Some(api_url), Some(api_key_env)) =
+                        (&remote_cfg.api_url, &remote_cfg.api_key_env)
+                    {
                         if let Ok(api_key) = std::env::var(api_key_env) {
-                            let model = remote_cfg.model.clone().unwrap_or_else(|| "gpt-4o-mini".to_string());
+                            let model = remote_cfg
+                                .model
+                                .clone()
+                                .unwrap_or_else(|| "gpt-4o-mini".to_string());
                             let provider = crate::llm::remote::RemoteLlmProvider::new(
-                                api_url,
-                                &api_key,
-                                &model,
-                            ).with_defaults(
+                                api_url, &api_key, &model,
+                            )
+                            .with_defaults(
                                 remote_cfg.timeout_seconds.unwrap_or(30),
                                 500,
                                 0.7,
                             );
-                            tracing::info!("LLM provider initialized: remote ({}) at {}", model, api_url);
+                            tracing::info!(
+                                "LLM provider initialized: remote ({}) at {}",
+                                model,
+                                api_url
+                            );
                             Some(Arc::new(provider) as Arc<dyn crate::llm::LlmProvider>)
                         } else {
-                            tracing::warn!("LLM configured but API key env var '{}' not set", api_key_env);
+                            tracing::warn!(
+                                "LLM configured but API key env var '{}' not set",
+                                api_key_env
+                            );
                             None
                         }
                     } else {
@@ -1204,7 +1355,10 @@ pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>
                     None
                 }
             } else {
-                tracing::info!("LLM adapter '{}' not supported yet", llm_config.adapter.as_deref().unwrap_or("none"));
+                tracing::info!(
+                    "LLM adapter '{}' not supported yet",
+                    llm_config.adapter.as_deref().unwrap_or("none")
+                );
                 None
             }
         } else {
@@ -1213,7 +1367,7 @@ pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>
     } else {
         None
     };
-    
+
     let state = AppState {
         started_at: Utc::now(),
         config,
@@ -1252,32 +1406,35 @@ pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>
         }
     }
 
-    let rocket = rocket::custom(fig).manage(state).mount(
-        "/",
-        routes![
-            index_redirect,
-            health,
-            status,
-            list_jobs,
-            get_stats,
-            list_users,
-            list_feeds,
-            create_feed,
-            import_opds,
-            trigger_fetch,
-            process_pending,
-            register,
-            login,
-            // Session routes
-            create_session,
-            list_sessions,
-            get_session,
-        ],
-    )
-    .mount("/ws", routes![
-        crate::sessions::websocket::chat_websocket,
-    ])
-    .mount("/static", FileServer::from("newscope/static"));
+    let rocket = rocket::custom(fig)
+        .manage(state)
+        .mount(
+            "/",
+            routes![
+                index_redirect,
+                health,
+                status,
+                list_jobs,
+                get_stats,
+                list_users,
+                list_feeds,
+                create_feed,
+                import_opds,
+                trigger_fetch,
+                process_pending,
+                register,
+                login,
+                // Logout endpoint for token revocation (soft logout)
+                logout,
+                // Session routes
+                create_session,
+                list_sessions,
+                get_session,
+                update_session,
+            ],
+        )
+        .mount("/ws", routes![crate::sessions::websocket::chat_websocket,])
+        .mount("/static", FileServer::from("newscope/static"));
 
     // Launch Rocket - this will run until shutdown (SIGINT/SIGTERM etc.)
     tracing::info!("Starting Rocket HTTP server");

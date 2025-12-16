@@ -1,14 +1,14 @@
 use anyhow::Result;
-use rocket::request::{FromRequest, Outcome, Request};
-use rocket::{State, get};
 use rocket::futures::{SinkExt, StreamExt};
+use rocket::request::{FromRequest, Outcome, Request};
+use rocket::{get, State};
 use rocket_ws::{Channel, Message, WebSocket};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::{error, info};
 
-use crate::llm::{LlmProvider, LlmRequest};
 use super::{get_messages, store_message};
+use crate::llm::{LlmProvider, LlmRequest};
 
 use serde_json::json;
 
@@ -20,7 +20,8 @@ impl<'r> FromRequest<'r> for AcceptLanguage {
     type Error = ();
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let lang = req.headers()
+        let lang = req
+            .headers()
             .get_one("Accept-Language")
             .and_then(|s| s.split(',').next()) // Get first language preference
             .and_then(|s| s.split('-').next()) // Get primary tag (e.g. "fr" from "fr-FR")
@@ -43,116 +44,181 @@ pub fn chat_websocket(
     let config = state.config.clone();
     let language = accept_lang.0;
 
-    ws.channel(move |mut stream| {
+    ws.channel(move |stream| {
         Box::pin(async move {
             info!("WebSocket connected for session {}", session_id);
 
-            // Send chat history on connection
-            // Send initial greeting or history
-            match crate::sessions::get_session_with_messages(&pool, session_id).await {
-                Ok((session, messages)) => {
-                    let user_id = session.user_id;
-                    let duration_seconds = session.duration_requested_seconds.unwrap_or(1200) as i64;
-                    
-                    if messages.is_empty() {
-                        // New session: generate press review
-                        if let Some(llm_provider) = llm.clone() {
-                            let pool = pool.clone();
-                            let model = config.as_ref()
-                            .and_then(|c| c.llm.as_ref())
-                            .and_then(|l| l.remote.as_ref())
-                            .and_then(|r| r.model.as_deref())
-                            .unwrap_or("unknown")
-                            .to_string();
-                            
-                            let greeting = match language.as_str() {
-                                "fr" => "👋 Bonjour ! Je prépare votre revue de presse personnalisée. Je vous enverrai une notification quand elle sera prête...",
-                                "es" => "👋 ¡Hola! Estoy preparando su resumen de prensa personalizado. Le enviaré una notificación cuando esté listo...",
-                                "de" => "👋 Hallo! Ich bereite Ihren persönlichen Pressespiegel vor. Ich sende Ihnen eine Benachrichtigung, wenn er fertig ist...",
-                                "it" => "👋 Ciao! Sto preparando la tua rassegna stampa personalizzata. Ti invierò una notifica quando sarà pronta...",
-                                _ => "👋 Hello! I'm preparing your personalized press review. I'll send you a notification when it's ready..."
-                            };
+            // Split stream into sink and stream
+            let (mut ws_sink, mut ws_stream) = stream.split();
 
-                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                "type": "message",
-                                "content": greeting
-                            })).unwrap())).await;
+            // Create MPSC channel for sending messages to the websocket
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
-                            // Send initial progress
-                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                "type": "progress",
-                                "message": "Fetching your personalized articles..."
-                            })).unwrap())).await;
+            // Spawn task to forward messages from channel to websocket
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    if let Err(e) = ws_sink.send(msg).await {
+                        error!("Failed to send message to websocket: {}", e);
+                        break;
+                    }
+                }
+            });
 
-                            // PHASE 3: Fetch PRE-COMPUTED personalized summaries
-                            let reading_minutes = duration_seconds / 120; // 50% for reading (divide by 2, then convert to minutes)
-                            let estimated_articles = (reading_minutes * 3).min(50); // ~3 articles/min reading, max 50
+            // Helper to send JSON message
+            let send_json = |tx: &tokio::sync::mpsc::UnboundedSender<Message>, json: serde_json::Value| {
+                let _ = tx.send(Message::Text(json.to_string()));
+            };
 
-                            match sqlx::query(
-                                "SELECT 
-                                    uas.article_id,
-                                    uas.personalized_headline,
-                                    uas.personalized_bullets,
-                                    uas.relevance_score,
-                                    a.canonical_url,
-                                    f.title as feed_title
-                                 FROM user_article_summaries uas
-                                 JOIN articles a ON uas.article_id = a.id
-                                 LEFT JOIN article_occurrences ao ON a.id = ao.article_id
-                                 LEFT JOIN feeds f ON ao.feed_id = f.id
-                                 LEFT JOIN user_article_views uav ON uas.user_id = uav.user_id AND uas.article_id = uav.article_id
-                                 WHERE uas.user_id = ?
-                                   AND uas.is_relevant = 1
-                                   AND uav.id IS NULL
-                                 GROUP BY uas.article_id
-                                 ORDER BY uas.relevance_score DESC, a.first_seen_at DESC
-                                 LIMIT ?"
-                            )
-                            .bind(user_id)
-                            .bind(estimated_articles)
-                            .fetch_all(&pool)
-                            .await
-                            {
-                                Ok(articles) => {
-                                    if articles.is_empty() {
-                                        let msg = "Welcome back! Your personalized articles are still being processed. Please check back in a few minutes.";
-                                        let _ = crate::sessions::store_message(&pool, session_id, "assistant", msg).await;
-                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                            "type": "message",
-                                            "content": msg
-                                        })).unwrap())).await;
-                                    } else {
-                                    // Fetch user profile to get preferred language
-                                    let mut language = language.clone();
-                                    if let Ok(profile) = crate::personalization::get_user_profile(&pool, user_id).await {
-                                        language = profile.language;
-                                    }
+            // Fetch session info first
+            let (user_id, messages, duration_seconds) = match crate::sessions::get_session_with_messages(&pool, session_id).await {
+                Ok((session, msgs)) => (
+                    session.user_id,
+                    msgs,
+                    session.duration_requested_seconds.unwrap_or(1200) as i64
+                ),
+                Err(e) => {
+                    error!("Failed to fetch session {}: {}", session_id, e);
+                    return Ok(());
+                }
+            };
 
+            // Shared state for article context (empty for now, populated if new session)
+            let article_context = Arc::new(std::sync::Mutex::new(Vec::<ArticleContext>::new()));
+            let article_context_bg = article_context.clone();
+            let article_context_chat = article_context.clone();
+
+            if messages.is_empty() {
+                // New session: generate press review
+                if let Some(llm_provider) = llm.clone() {
+                    let pool = pool.clone();
+                    let _model = config.as_ref()
+                        .and_then(|c| c.llm.as_ref())
+                        .and_then(|l| l.remote.as_ref())
+                        .and_then(|r| r.model.as_deref())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let greeting = match language.as_str() {
+                        "fr" => "👋 Bonjour ! Je prépare votre revue de presse personnalisée. Je vous enverrai une notification quand elle sera prête...",
+                        "es" => "👋 ¡Hola! Estoy preparando su resumen de prensa personalizado. Le enviaré una notificación cuando esté listo...",
+                        "de" => "👋 Hallo! Ich bereite Ihren persönlichen Pressespiegel vor. Ich sende Ihnen eine Benachrichtigung, wenn er fertig ist...",
+                        "it" => "👋 Ciao! Sto preparando la tua rassegna stampa personalizzata. Ti invierò una notifica quando sarà pronta...",
+                        _ => "👋 Hello! I'm preparing your personalized press review. I'll send you a notification when it's ready..."
+                    };
+
+                    send_json(&tx, json!({
+                        "type": "message",
+                        "content": greeting
+                    }));
+
+                    // Spawn background task for heavy lifting
+                    let tx_clone = tx.clone(); // Clone sender for background task
+                    let language_clone = language.clone();
+                    // Initialize user_profile_lang from Accept-Language; it may be updated after fetching profile
+
+                    tokio::spawn(async move {
+                        // Notify when ready
+                        let _ = tx_clone.send(Message::Text(serde_json::to_string(&json!({
+                            "type": "notification",
+                            "title": "Newscope",
+                            "body": "Votre revue de presse est prête !"
+                        })).unwrap()));
+
+                        // PHASE 3: Fetch PRE-COMPUTED personalized summaries
+                        let duration = duration_seconds as u64;
+                        let reading_minutes = (duration as f64 / 60.0).ceil();
+
+                        // Fetch user profile for reading speed and preferred language
+                        let mut reading_speed = 250;
+                        // Initialize from Accept-Language header (language_clone is moved into the spawn)
+                        let mut user_profile_lang = language_clone.clone(); // default to Accept-Language header
+
+                        let user_profile_opt = match crate::personalization::get_user_profile(&pool, user_id).await {
+                            Ok(profile) => {
+                                reading_speed = profile.reading_speed;
+                                user_profile_lang = profile.language.clone();
+                                Some(profile)
+                            }
+                            Err(_) => None,
+                        };
+
+                        // Calculate number of articles
+                        let total_words_budget = (reading_minutes / 2.0) * reading_speed as f64;
+                        let estimated_articles = (total_words_budget / 150.0).ceil() as i64;
+                        // Ensure at least 3 articles, max 15
+                        let estimated_articles = estimated_articles.max(3).min(15);
+
+                        info!("Session {}: duration {}s ({}m), speed {}wpm -> budget {} words -> {} articles",
+                            session_id, duration, reading_minutes, reading_speed, total_words_budget, estimated_articles);
+
+                        match sqlx::query(
+                            "SELECT
+                                uas.article_id,
+                                uas.personalized_headline,
+                                uas.personalized_bullets,
+                                uas.personalized_details,
+                                uas.language,
+                                uas.relevance_score,
+                                a.canonical_url,
+                                f.title as feed_title
+                             FROM user_article_summaries uas
+                             JOIN articles a ON uas.article_id = a.id
+                             -- Require that the article appears in at least one feed the user is subscribed to.
+                             JOIN article_occurrences ao ON a.id = ao.article_id
+                             JOIN subscriptions s ON s.feed_id = ao.feed_id AND s.user_id = ?
+                             LEFT JOIN feeds f ON ao.feed_id = f.id
+                             -- Exclude articles already viewed by the user in ANY session
+                             LEFT JOIN user_article_views uav ON uas.user_id = uav.user_id AND uas.article_id = uav.article_id
+                             WHERE uas.user_id = ?
+                               AND uas.is_relevant = 1
+                               AND uav.id IS NULL
+                             GROUP BY uas.article_id
+                             ORDER BY uas.relevance_score DESC, a.first_seen_at DESC
+                             LIMIT ?"
+                        )
+                        // Bind order corresponds to the ? placeholders above:
+                        // 1: s.user_id, 2: uas.user_id, 3: LIMIT
+                        .bind(user_id)
+                        .bind(user_id)
+                        .bind(estimated_articles)
+                        .fetch_all(&pool)
+                        .await
+                        {
+                            Ok(articles) => {
+                                if articles.is_empty() {
+                                    let msg = "I couldn't find any new relevant articles for you right now. Please check back later!";
+                                    let _ = tx_clone.send(Message::Text(serde_json::to_string(&json!({
+                                        "type": "message",
+                                        "content": msg
+                                    })).unwrap()));
+                                } else {
                                     // Hide progress indicator
-                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                    let _ = tx_clone.send(Message::Text(serde_json::to_string(&json!({
                                         "type": "progress_hide"
-                                    })).unwrap())).await;
+                                    })).unwrap()));
 
-                                    // Extract article data from rows
+                                    // Extract article data from rows (include stored summary language)
                                     use sqlx::Row;
-                                    let article_data: Vec<(i64, String, String, Option<String>, f64, String, Option<String>)> = articles.iter()
+                                    let article_data: Vec<(i64, String, String, Option<String>, String, f64, String, Option<String>)> = articles.iter()
                                         .map(|row| {
                                             let article_id: i64 = row.get("article_id");
                                             let headline: String = row.get("personalized_headline");
                                             let bullets: String = row.get("personalized_bullets");
                                             let details: Option<String> = row.try_get("personalized_details").ok();
+                                            let article_lang: String = row.get("language");
                                             let relevance: f64 = row.get("relevance_score");
                                             let url: String = row.get("canonical_url");
                                             let feed_title: Option<String> = row.try_get("feed_title").ok();
-                                            (article_id, headline, bullets, details, relevance, url, feed_title)
+                                            (article_id, headline, bullets, details, article_lang, relevance, url, feed_title)
                                         })
                                         .collect();
 
                                     // STREAMING MODE: Send articles as individual cards
-                                    for (article_id, headline, bullets_json, details, relevance, url, feed_title) in article_data {
+                                    for (article_id, headline, bullets_json, details, article_lang, _relevance, url, feed_title) in article_data {
                                         // Construct raw summary
-                                        let raw_summary = if let Some(d) = details {
-                                            d
+                                        // Borrow the inner string to avoid moving `details` so it can still be used later.
+                                        let raw_summary = if let Some(ref d) = details {
+                                            d.clone()
                                         } else {
                                             let bullets: Vec<String> = serde_json::from_str(&bullets_json).unwrap_or_default();
                                             bullets.join(" ")
@@ -161,19 +227,31 @@ pub fn chat_websocket(
                                         let theme = feed_title.clone().unwrap_or_else(|| "Actualité".to_string());
                                         let source_name = feed_title.unwrap_or_else(|| "Unknown".to_string());
 
-                                        // JIT REFINEMENT: Translate & Fix Truncation
+                                        // JIT REFINEMENT: Translate & Fix Truncation & Remove Markdown
                                         // We call the LLM to ensure the content is in the user's language and properly formatted.
+                                        
+                                        // Truncate input to avoid context limits and reduce noise (e.g. footers/links)
+                                        let input_text = if raw_summary.len() > 2000 {
+                                            format!("{}...", &raw_summary[..2000])
+                                        } else {
+                                            raw_summary.clone()
+                                        };
+
                                         let refine_prompt = format!(
                                             "Task: Translate and refine this news item for a {} speaker.
-Title: {}
-Summary: {}
+                                    
+                                    Original Headline: {}
+                                    Content Snippet: {}
 
-Requirements:
-1. Language: {} ONLY.
-2. No truncation: Ensure the Title and Summary are complete sentences/phrases and NOT cut off.
-3. Style: Factual, dense, news-style.
-4. Output JSON: {{ \"title\": \"...\", \"summary\": \"...\" }}",
-                                            match language.as_str() {
+                                    Requirements:
+                                    1. Language: {} ONLY.
+                                    2. No truncation: Ensure the output is complete.
+                                    3. No Markdown: Output PLAIN TEXT only.
+                                    4. format: Use the exact format below:
+                                    TITLE: <title>
+                                    SUMMARY: <summary>
+                                    ",
+                                            match user_profile_lang.as_str() {
                                                 "fr" => "French",
                                                 "es" => "Spanish",
                                                 "de" => "German",
@@ -181,8 +259,8 @@ Requirements:
                                                 _ => "English"
                                             },
                                             headline,
-                                            raw_summary,
-                                            match language.as_str() {
+                                            input_text,
+                                            match user_profile_lang.as_str() {
                                                 "fr" => "French",
                                                 "es" => "Spanish",
                                                 "de" => "German",
@@ -191,60 +269,95 @@ Requirements:
                                             }
                                         );
 
-                                        let (final_title, final_summary) = match llm_provider.generate(crate::llm::LlmRequest {
+                                        let (final_title, final_summary, final_lang) = match llm_provider.generate(crate::llm::LlmRequest {
                                             prompt: refine_prompt,
-                                            max_tokens: Some(300),
+                                            max_tokens: Some(600),
                                             temperature: Some(0.3),
-                                            timeout_seconds: Some(30),
+                                            timeout_seconds: Some(45),
                                         }).await {
                                             Ok(resp) => {
-                                                // Try parse JSON
-                                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp.content) {
-                                                    (
-                                                        json["title"].as_str().unwrap_or(&headline).to_string(),
-                                                        json["summary"].as_str().unwrap_or(&raw_summary).to_string()
-                                                    )
+                                                let content = resp.content.trim();
+                                                
+                                                // Robust parsing of TITLE: ... SUMMARY: ...
+                                                let title_marker = "TITLE:";
+                                                let summary_marker = "SUMMARY:";
+                                                
+                                                if let (Some(t_idx), Some(s_idx)) = (content.find(title_marker), content.find(summary_marker)) {
+                                                    if t_idx < s_idx {
+                                                        let title_part = content[t_idx + title_marker.len()..s_idx].trim().to_string();
+                                                        let summary_part = content[s_idx + summary_marker.len()..].trim().to_string();
+                                                        
+                                                        if !title_part.is_empty() && !summary_part.is_empty() {
+                                                             (title_part, summary_part, user_profile_lang.clone())
+                                                        } else {
+                                                            // Parsed empty fields? unlikely but fallback
+                                                            error!("JIT Refinement: parsed empty fields");
+                                                            (headline.clone(), raw_summary.clone(), article_lang.clone())
+                                                        }
+                                                    } else {
+                                                        // Markers out of order
+                                                        error!("JIT Refinement: markers out of order");
+                                                        (headline.clone(), raw_summary.clone(), article_lang.clone())
+                                                    }
                                                 } else {
-                                                    // Fallback if JSON fails (rare with low temp)
-                                                    (headline, raw_summary)
+                                                    // Markers not found. If the response is non-empty, use it as summary
+                                                    // This handles cases where the model forgets "SUMMARY:" but produces good text.
+                                                    if !content.is_empty() && content.len() > 20 {
+                                                        // Assume the whole text is the summary, keep original title
+                                                        info!("JIT Refinement: markers missing, using full content as summary");
+                                                        (headline.clone(), content.to_string(), user_profile_lang.clone())
+                                                    } else {
+                                                        error!("JIT Refinement: response too short or invalid");
+                                                        (headline.clone(), raw_summary.clone(), article_lang.clone())
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
                                                 error!("JIT refinement failed: {}", e);
-                                                (headline, raw_summary)
+                                                (headline.clone(), raw_summary.clone(), article_lang.clone())
                                             }
                                         };
 
-                                        // Send News Card
-                                        let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                            "type": "news_item",
+                                        // Update shared context
+                                        if let Ok(mut ctx) = article_context_bg.lock() {
+                                            ctx.push(ArticleContext {
+                                                title: final_title.clone(),
+                                                summary: final_summary.clone(),
+                                                content: details.clone(), // Use details as content snippet if available
+                                            });
+                                        }
+
+                                        // Send card (set lang to the content language)
+                                        let card = json!({
+                                            "type": "news_card",
                                             "article": {
                                                 "id": article_id,
                                                 "title": final_title,
-                                                "theme": theme,
                                                 "summary": final_summary,
-                                                "sources": [{
-                                                    "name": source_name,
-                                                    "url": url
-                                                }]
+                                                "source": { "name": source_name },
+                                                "url": url,
+                                                "theme": theme,
+                                                "lang": final_lang
                                             }
-                                        })).unwrap())).await;
+                                        });
+                                        let _ = tx_clone.send(Message::Text(serde_json::to_string(&card).unwrap()));
 
                                         // Mark as viewed immediately
                                         let _ = sqlx::query(
-                                            "INSERT OR IGNORE INTO user_article_views (user_id, article_id) VALUES (?, ?)"
+                                            "INSERT OR IGNORE INTO user_article_views (user_id, article_id, session_id) VALUES (?, ?, ?)"
                                         )
                                         .bind(user_id)
                                         .bind(article_id)
+                                        .bind(session_id)
                                         .execute(&pool)
                                         .await;
-                                        
+
                                         // Small delay for progressive effect
                                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                                     }
 
                                     // Final message
-                                    let completion_msg = match language.as_str() {
+                                    let completion_msg = match language_clone.as_str() {
                                         "fr" => "Voilà pour l'essentiel de l'actualité. Souhaitez-vous approfondir un sujet ?",
                                         "es" => "Eso es todo por ahora. ¿Desea profundizar en algún tema?",
                                         "de" => "Das war das Wichtigste. Möchten Sie ein Thema vertiefen?",
@@ -253,56 +366,64 @@ Requirements:
                                     };
 
                                     let _ = crate::sessions::store_message(&pool, session_id, "assistant", completion_msg).await;
-                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
+                                    let _ = tx_clone.send(Message::Text(serde_json::to_string(&json!({
                                         "type": "message",
                                         "content": completion_msg
-                                    })).unwrap())).await;
+                                    })).unwrap()));
                                 }
                             }
-                                Err(e) => {
-                                    error!("Failed to fetch personalized articles for user {}: {:?}", user_id, e);
-                                    let msg = "I'm having trouble accessing the latest news. Please try again later.";
-                                    let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                        "type": "message",
-                                        "content": msg
-                                    })).unwrap())).await;
-                                }
+                            Err(e) => {
+                                error!("Failed to fetch personalized articles for user {}: {:?}", user_id, e);
+                                let msg = "I'm having trouble accessing the latest news. Please try again later.";
+                                let _ = tx_clone.send(Message::Text(serde_json::to_string(&json!({
+                                    "type": "message",
+                                    "content": msg
+                                })).unwrap()));
                             }
-                        } else {
-                             let msg = "Hello! I'm ready to discuss the news with you.";
-                             let _ = crate::sessions::store_message(&pool, session_id, "assistant", msg).await;
-                             let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                 "type": "message",
-                                 "content": msg
-                             })).unwrap())).await;
                         }
-                    } else {
-                        // Existing session: replay history
-                        for msg in messages {
-                            let role = if msg.author == "user" { "user" } else { "assistant" };
-                            let _ = stream.send(Message::Text(serde_json::to_string(&json!({
-                                "type": "history",
-                                "role": role,
-                                "content": msg.message
-                            })).unwrap())).await;
-                        }
-                    }
+                    });
                 }
-                Err(e) => {
-                    error!("Failed to load chat history: {}", e);
+            } else {
+                // Existing session: replay history
+                for msg in messages {
+                    let role = if msg.author == "user" { "user" } else { "assistant" };
+                    send_json(&tx, json!({
+                        "type": "history",
+                        "role": role,
+                        "content": msg.message
+                    }));
                 }
             }
 
             // Handle incoming messages
-            while let Some(message) = stream.next().await {
+            while let Some(message) = ws_stream.next().await {
                 match message {
                     Ok(Message::Text(text)) => {
                         info!("Received message for session {}: {}", session_id, text);
 
                         // Parse user message
-                        let user_message = match serde_json::from_str::<serde_json::Value>(&text) {
-                            Ok(json) => json["message"].as_str().unwrap_or(&text).to_string(),
-                            Err(_) => text,
+                        let json_msg: serde_json::Value = serde_json::from_str(&text).unwrap_or(json!({"type": "message", "message": text}));
+
+                        if json_msg["type"] == "rate" {
+                            // Handle Rating
+                            if let (Some(article_id), Some(rating)) = (json_msg["article_id"].as_i64(), json_msg["rating"].as_i64()) {
+                                info!("User {} rated article {} with {} stars", user_id, article_id, rating);
+                                let _ = sqlx::query(
+                                    "UPDATE user_article_views SET rating = ? WHERE user_id = ? AND article_id = ?"
+                                )
+                                .bind(rating)
+                                .bind(user_id)
+                                .bind(article_id)
+                                .execute(&pool)
+                                .await;
+                            }
+                            continue;
+                        }
+
+                        let user_message = if json_msg["type"] == "message" {
+                            json_msg["message"].as_str().unwrap_or(&text).to_string()
+                        } else {
+                            text
                         };
 
                         // Store user message
@@ -313,7 +434,12 @@ Requirements:
 
                         // Generate LLM response
                         let response = if let Some(ref provider) = llm {
-                            match handle_chat_message(&pool, provider, session_id, &user_message).await {
+                            // Get current articles context
+                            let current_articles = article_context_chat.lock()
+                                .map(|guard| guard.clone())
+                                .unwrap_or_default();
+
+                            match handle_chat_message(&pool, provider, session_id, &user_message, &current_articles).await {
                                 Ok(resp) => resp,
                                 Err(e) => {
                                     error!("LLM error: {}", e);
@@ -330,15 +456,11 @@ Requirements:
                         }
 
                         // Send response to client
-                        let json = serde_json::json!({
+                        send_json(&tx, json!({
                             "type": "message",
                             "author": "assistant",
                             "message": response,
-                        });
-                        if let Err(e) = stream.send(Message::Text(json.to_string())).await {
-                            error!("Failed to send response: {}", e);
-                            break;
-                        }
+                        }));
                     }
                     Ok(Message::Close(_)) => {
                         info!("WebSocket closed for session {}", session_id);
@@ -357,19 +479,28 @@ Requirements:
     })
 }
 
+/// Context for an article to be used in chat
+#[derive(Clone, Debug)]
+pub struct ArticleContext {
+    pub title: String,
+    pub summary: String,
+    pub content: Option<String>,
+}
+
 /// Handle chat message with LLM
 async fn handle_chat_message(
     pool: &SqlitePool,
     llm_provider: &Arc<dyn LlmProvider>,
     session_id: i64,
     user_message: &str,
+    articles: &[ArticleContext],
 ) -> Result<String> {
     // Get conversation history
     let messages = get_messages(pool, session_id).await?;
 
     // Get session to find user_id
     let session = crate::sessions::get_session(pool, session_id).await?;
-    
+
     // Get user profile for language
     let mut language = "English".to_string();
     if let Ok(profile) = crate::personalization::get_user_profile(pool, session.user_id).await {
@@ -378,8 +509,9 @@ async fn handle_chat_message(
             "es" => "Spanish",
             "de" => "German",
             "it" => "Italian",
-            _ => "English"
-        }.to_string();
+            _ => "English",
+        }
+        .to_string();
     }
 
     // Build conversation context
@@ -388,8 +520,32 @@ async fn handle_chat_message(
          The user is exploring their personalized news feed. \
          Answer questions concisely and help them understand the news. \
          IMPORTANT: You MUST answer in {}.\n\n",
-         language
+        language
     );
+
+    // Add article context if available
+    if !articles.is_empty() {
+        context.push_str("Here are the articles in the user's current session:\n\n");
+        for (i, article) in articles.iter().enumerate() {
+            context.push_str(&format!(
+                "Article {}:\nTitle: {}\nSummary: {}\n",
+                i + 1,
+                article.title,
+                article.summary
+            ));
+            if let Some(content) = &article.content {
+                // Truncate content to avoid token limit issues, e.g. 500 chars
+                let truncated = if content.len() > 500 {
+                    format!("{}...", &content[0..500])
+                } else {
+                    content.clone()
+                };
+                context.push_str(&format!("Content Snippet: {}\n", truncated));
+            }
+            context.push_str("\n");
+        }
+        context.push_str("Use the above articles to answer the user's questions if relevant.\n\n");
+    }
 
     for msg in messages.iter().rev().take(10).rev() {
         context.push_str(&format!("{}: {}\n", msg.author, msg.message));
