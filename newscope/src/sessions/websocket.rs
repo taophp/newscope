@@ -243,15 +243,18 @@ pub fn chat_websocket(
                                     Original Headline: {}
                                     Content Snippet: {}
 
+
                                     Requirements:
                                     1. Language: {} ONLY (for the content).
                                     2. No truncation: Keep the content complete.
                                     3. No Markdown: Output PLAIN TEXT only.
-                                    4. Format: Use the exact format below. DO NOT translate the keywords TITLE and SUMMARY.
+                                    4. Format: Use the exact format below. DO NOT translate the keywords TITLE, SUMMARY, and CONTEXT.
                                     TITLE: <title>
                                     SUMMARY: <summary>
+                                    CONTEXT: <emoji> <name>
+                                    (Examples for CONTEXT: '🇷🇺 Russie', '🌍 Monde', '🌐 Internet', '🇺🇸 USA')
                                     5. No chatter: Do NOT add intro/outro text. Do NOT add notes like '(Note: ...)'.
-                                    6. STRICT: Return ONLY the TITLE and SUMMARY sections.
+                                    6. STRICT: Return ONLY the TITLE, SUMMARY and CONTEXT sections.
                                     ",
                                             match user_profile_lang.as_str() {
                                                 "fr" => "French",
@@ -271,14 +274,14 @@ pub fn chat_websocket(
                                             }
                                         );
 
-                                        let (final_title, final_summary, final_lang) = match llm_provider.generate(crate::llm::LlmRequest {
+                                        let (final_title, final_summary, final_context, final_lang) = match llm_provider.generate(crate::llm::LlmRequest {
                                             prompt: refine_prompt,
                                             max_tokens: Some(600),
                                             temperature: Some(0.3),
                                             timeout_seconds: Some(45),
                                         }).await {
                                             Ok(resp) => {
-                                                // Robust parsing of TITLE: ... SUMMARY: ...
+                                                // Robust parsing of TITLE: ... SUMMARY: ... CONTEXT: ...
                                                 // We accept French variants as fallback if the model disobeys instructions
                                                 let content = resp.content.trim();
                                                 
@@ -293,11 +296,31 @@ pub fn chat_websocket(
 
                                                 let title_marker = find_marker(content, &["TITLE:", "TITRE:", "Title:", "Titre:"]);
                                                 let summary_marker = find_marker(content, &["SUMMARY:", "RESUME:", "RÉSUMÉ:", "Summary:", "Resume:", "Résumé:"]);
+                                                let context_marker = find_marker(content, &["CONTEXT:", "CONTEXTE:", "Context:", "Contexte:"]);
                                                 
                                                 if let (Some((t_idx, t_len)), Some((s_idx, s_len))) = (title_marker, summary_marker) {
                                                     if t_idx < s_idx {
                                                         let title_part = content[t_idx + t_len..s_idx].trim().to_string();
-                                                        let mut summary_part = content[s_idx + s_len..].trim().to_string();
+                                                        
+                                                        // Determine end of summary (before CONTEXT if present, else end of string)
+                                                        let summary_end = if let Some((c_idx, _)) = context_marker {
+                                                            if c_idx > s_idx { c_idx } else { content.len() }
+                                                        } else {
+                                                            content.len()
+                                                        };
+
+                                                        let mut summary_part = content[s_idx + s_len..summary_end].trim().to_string();
+
+                                                        // Extract Context if present
+                                                        let context_part = if let Some((c_idx, c_len)) = context_marker {
+                                                            if c_idx > s_idx {
+                                                                content[c_idx + c_len..].trim().lines().next().unwrap_or("").trim().to_string()
+                                                            } else {
+                                                                String::new()
+                                                            }
+                                                        } else {
+                                                            String::new()
+                                                        };
 
                                                         // Heuristic to strip common trailing notes if the model ignores checking
                                                         // e.g. "(Note: ...)" "\nNote: ..."
@@ -313,14 +336,14 @@ pub fn chat_websocket(
                                                         let summary_clean = summary_part.trim().to_string();
                                                         
                                                         if !title_part.is_empty() && !summary_clean.is_empty() {
-                                                             (title_part, summary_clean, user_profile_lang.clone())
+                                                             (title_part, summary_clean, context_part, user_profile_lang.clone())
                                                         } else {
                                                             error!("JIT Refinement: parsed empty fields");
-                                                            (headline.clone(), raw_summary.clone(), article_lang.clone())
+                                                            (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
                                                         }
                                                     } else {
                                                         error!("JIT Refinement: markers out of order");
-                                                        (headline.clone(), raw_summary.clone(), article_lang.clone())
+                                                        (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
                                                     }
                                                 } else {
                                                     // Markers not found. If the response is non-empty, use it as summary
@@ -328,16 +351,16 @@ pub fn chat_websocket(
                                                     if !content.is_empty() && content.len() > 20 {
                                                         // Assume the whole text is the summary, keep original title
                                                         info!("JIT Refinement: markers missing, using full content as summary");
-                                                        (headline.clone(), content.to_string(), user_profile_lang.clone())
+                                                        (headline.clone(), content.to_string(), String::new(), user_profile_lang.clone())
                                                     } else {
                                                         error!("JIT Refinement: response too short or invalid");
-                                                        (headline.clone(), raw_summary.clone(), article_lang.clone())
+                                                        (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
                                                     }
                                                 }
                                             }
                                             Err(e) => {
                                                 error!("JIT refinement failed: {}", e);
-                                                (headline.clone(), raw_summary.clone(), article_lang.clone())
+                                                (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
                                             }
                                         };
 
@@ -360,7 +383,9 @@ pub fn chat_websocket(
                                                 "source": { "name": source_name },
                                                 "url": url,
                                                 "theme": theme,
-                                                "lang": final_lang
+                                                "lang": final_lang,
+                                                "origin_lang": article_lang,
+                                                "context_region": final_context
                                             }
                                         });
                                         let _ = tx_clone.send(Message::Text(serde_json::to_string(&card).unwrap()));

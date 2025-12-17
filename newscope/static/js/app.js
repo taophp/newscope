@@ -502,11 +502,7 @@ const App = {
       ) {
         feedContainer = document.createElement("div");
         feedContainer.className = "news-feed-container";
-        // Layout cards side-by-side with wrapping and gap
-        feedContainer.style.display = "flex";
-        feedContainer.style.flexWrap = "wrap";
-        feedContainer.style.gap = "20px";
-        feedContainer.style.alignItems = "flex-start";
+        // Inline styles removed, handled by CSS class .news-feed-container
         container.appendChild(feedContainer);
       }
 
@@ -546,11 +542,7 @@ const App = {
         ) {
           feedContainer = document.createElement("div");
           feedContainer.className = "news-feed-container";
-          // Ensure updated cards use the same horizontal layout
-          feedContainer.style.display = "flex";
-          feedContainer.style.flexWrap = "wrap";
-          feedContainer.style.gap = "20px";
-          feedContainer.style.alignItems = "flex-start";
+          // Inline styles removed
           container.appendChild(feedContainer);
         }
         feedContainer.appendChild(updatedCard);
@@ -868,46 +860,115 @@ const App = {
   renderNewsCard(article) {
     // Create card container
     const card = document.createElement("div");
-    card.className = "news-card";
-    card.style.boxSizing = "border-box";
-    // Set card flex basis so multiple cards can appear side-by-side
-    card.style.flex = "0 1 320px";
-    card.style.maxWidth = "calc(35em + 40px)";
-    card.style.width = "100%";
+    card.className = "news-card collapsed"; // Start collapsed
+    card.className = "news-card collapsed"; // Start collapsed
+    // Inline styles removed in favor of CSS class .news-card
 
-    // Attach article id for updates
+
     if (article && article.id !== undefined && article.id !== null) {
       card.setAttribute("data-article-id", String(article.id));
     }
 
-    // Set language attribute to help user agents and screen readers.
-    // Prefer explicit article.lang, otherwise use browser primary language.
-    try {
-      const browserLang = (
-        navigator.language ||
-        navigator.userLanguage ||
-        "en"
-      ).split("-")[0];
-      card.lang = article && article.lang ? article.lang : browserLang;
-    } catch (e) {
-      card.lang = article && article.lang ? article.lang : "en";
+    // Determine Context Flag/Region
+    // Prioritize 'context_region' from LLM (e.g. "🇷🇺 Russie").
+    // Fallback to 'origin_lang' or 'lang'.
+    let flag = "🌍";
+    let flagTooltip = "Monde / Inconnu";
+
+    if (article && article.context_region && article.context_region.trim()) {
+      const ctx = article.context_region.trim();
+      // Regex to split Emoji and Text (naive: assume emoji is at start)
+      // Matches one or more emoji chars at start, followed by optional space, then rest
+      const match = ctx.match(/^([\p{Emoji}\u200d]+)\s*(.*)$/u);
+      if (match) {
+        flag = match[1];
+        flagTooltip = match[2] || "Contexte";
+      } else {
+        // If no emoji found, maybe just text? use Default flag + text as tooltip
+        flagTooltip = ctx;
+      }
+    } else {
+      // Fallback: Language based
+      const lang = (article && (article.origin_lang || article.lang) ? (article.origin_lang || article.lang) : "en").toLowerCase();
+      if (lang.startsWith("fr")) { flag = "🇫🇷"; flagTooltip = "France / Francophone"; }
+      else if (lang.startsWith("en")) { flag = "🇺🇸"; flagTooltip = "USA / Anglophone"; }
+      else if (lang.startsWith("es")) { flag = "🇪🇸"; flagTooltip = "Espagne / Hispanophone"; }
+      else if (lang.startsWith("de")) { flag = "🇩🇪"; flagTooltip = "Allemagne / Germanophone"; }
+      else if (lang.startsWith("it")) { flag = "🇮🇹"; flagTooltip = "Italie"; }
     }
 
-    // Header
+    // Prepare Source Icon
+    // Logic reused from before but now we need it for the header
+    const sourcesArr = Array.isArray(article.sources)
+      ? article.sources
+      : article.source
+        ? [article.source]
+        : [];
+
+    // We take the primary source (first one) for the header icon
+    let sourceIconHtml = '<span class="source-fallback-icon">📰</span>';
+    let sourceUrl = article.url || "";
+    let sourceName = "Source";
+
+    if (sourcesArr.length > 0) {
+      const primarySource = sourcesArr[0];
+      sourceName = primarySource.name || "Source";
+      const urlToUse = primarySource.url || article.url;
+      sourceUrl = urlToUse;
+
+      try {
+        const domain = urlToUse ? new URL(urlToUse).hostname : "";
+        if (domain) {
+          const faviconUrl = `${new URL(urlToUse).protocol}//${domain}/favicon.ico`;
+          sourceIconHtml = `<img src="${faviconUrl}" class="source-icon header-source-icon" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
+                 <span class="source-fallback-icon" style="display:none;">📰</span>`;
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    // Card Header (Always Visible)
     const header = document.createElement("div");
     header.className = "card-header";
+    // Cursor pointer is handled in CSS
+    header.onclick = (e) => {
+      // Prevent toggle if clicking directly on a link (or its children)
+      if (e.target.closest('a')) return;
+      card.classList.toggle("collapsed");
+      const chevron = header.querySelector(".toggle-chevron");
+      if (chevron) {
+        chevron.style.transform = card.classList.contains("collapsed") ? "rotate(0deg)" : "rotate(180deg)";
+      }
+    };
+
     const titleText = article && article.title ? article.title : "";
-    // Keep title safe: render as plain text (no markdown for title) to avoid layout surprises
+    const themeText = article && article.theme ? article.theme : "News";
+
     header.innerHTML = `
-            <h3 class="card-title">${this.escapeHtml(titleText)}</h3>
-            <!-- <span class="card-theme">${this.escapeHtml(article.theme || "Actualité")}</span> -->
-        `;
+        <div class="header-row">
+            <a href="${this.escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer" class="header-source" title="${this.escapeHtml(sourceName)}">
+                ${sourceIconHtml}
+            </a>
+            <div class="header-main">
+                <h3 class="card-title">${this.escapeHtml(titleText)}</h3>
+                <div class="header-meta">
+                     <span class="meta-item meta-flag" title="${this.escapeHtml(flagTooltip)}">${flag}</span>
+                     <span class="meta-item meta-theme">${this.escapeHtml(themeText)}</span>
+                </div>
+            </div>
+            <div class="header-toggle">
+                <span class="toggle-chevron">▼</span>
+            </div>
+        </div>
+    `;
     card.appendChild(header);
+
+    // Collapsible Body
+    const body = document.createElement("div");
+    body.className = "card-body";
 
     // Content
     const content = document.createElement("div");
     content.className = "card-content";
-    // Render markdown in the summary if a markdown parser is available (marked included in index.html)
     const summaryText = article && article.summary ? article.summary : "";
     if (window.marked) {
       try {
@@ -918,115 +979,46 @@ const App = {
     } else {
       content.innerHTML = `<p>${this.escapeHtml(summaryText)}</p>`;
     }
-    card.appendChild(content);
+    body.appendChild(content);
 
     // Footer
     const footer = document.createElement("div");
     footer.className = "card-footer";
 
-    // Source Icons (Left)
-    const sourceIcons = document.createElement("div");
-    sourceIcons.className = "source-icons";
-    // Support either article.sources (array) or single article.source
-    const sourcesArr = Array.isArray(article.sources)
-      ? article.sources
-      : article.source
-        ? [article.source]
-        : [];
-
-    if (sourcesArr && Array.isArray(sourcesArr)) {
-      sourcesArr.forEach((source) => {
-        try {
-          // Use source URL if available, otherwise fallback to article URL
-          const urlToUse = source.url || article.url;
-
-          // Try to get domain for favicon
-          let domain = urlToUse ? new URL(urlToUse).hostname : "";
-
-          if (domain) {
-            const link = document.createElement("a");
-            link.href = urlToUse;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-
-            const img = document.createElement("img");
-            // Use direct favicon from the site root to avoid third-party services (Google).
-            // This is a naive approach but respects privacy.
-            img.src = `${new URL(urlToUse).protocol}//${domain}/favicon.ico`;
-            img.className = "source-icon";
-            img.title = source.name || domain;
-
-            link.appendChild(img);
-            sourceIcons.appendChild(link);
-          } else if (source && source.name) {
-            // Fallback: name-only source
-            const span = document.createElement("span");
-            span.className = "source-fallback";
-            span.textContent = source.name;
-            sourceIcons.appendChild(span);
-          }
-        } catch (e) {
-          // Ignore bad URLs
-          console.warn("Error rendering source icon:", e);
-        }
-      });
-    }
-    footer.appendChild(sourceIcons);
-
-    // Actions (Right)
+    // Actions (Rating + Learn More)
     const actions = document.createElement("div");
     actions.className = "card-actions";
 
-    // Rating Stars
+    // Rating
     const ratingDiv = document.createElement("div");
     ratingDiv.className = "rating-stars";
-    // 5 to 1 for row-reverse logic
     for (let i = 5; i >= 1; i--) {
       const star = document.createElement("span");
       star.className = "star";
       star.textContent = "★";
       star.dataset.value = i;
       star.onclick = () => {
-        console.log(`Rated ${i} stars for article ${article.id}`);
-        // Send rating to backend
         if (this.chatManager) {
-          // Keep existing API shape but send a plain object via ChatManager
           try {
-            this.chatManager.send(
-              JSON.stringify({
-                type: "rate",
-                article_id: article.id,
-                rating: i,
-              }),
-            );
+            this.chatManager.send(JSON.stringify({ type: "rate", article_id: article.id, rating: i }));
           } catch (e) {
-            // fallback: send simple message
             this.chatManager.send(`rate:${article.id}:${i}`);
           }
         }
-        // Visual feedback: update stars
         const stars = ratingDiv.querySelectorAll(".star");
         stars.forEach((s) => {
-          if (parseInt(s.dataset.value) <= i) {
-            s.classList.add("active");
-          } else {
-            s.classList.remove("active");
-          }
+          if (parseInt(s.dataset.value) <= i) s.classList.add("active");
+          else s.classList.remove("active");
         });
       };
       ratingDiv.appendChild(star);
     }
     actions.appendChild(ratingDiv);
 
-    // Learn More Button
+    // Learn More
     const btnLearnMore = document.createElement("button");
     btnLearnMore.className = "btn-learn-more";
-    btnLearnMore.innerHTML = `
-            <span>En savoir plus</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M9 18l6-6-6-6"/>
-            </svg>
-        `;
+    btnLearnMore.innerHTML = `<span>En savoir plus</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>`;
     btnLearnMore.onclick = () => {
       const query = `Dis-m'en plus sur : ${article.title}`;
       this.addMessage("user", query);
@@ -1036,7 +1028,14 @@ const App = {
     actions.appendChild(btnLearnMore);
 
     footer.appendChild(actions);
-    card.appendChild(footer);
+
+    // Source Link (Footer) - Optional, maybe we rely on header icon?
+    // User requested "Note | En savoir plus" in the footer area in expanded view.
+    // Let's keep the explicit link if needed, but maybe simpler.
+    // For now, let's stick to actions. 
+
+    body.appendChild(footer);
+    card.appendChild(body);
 
     return card;
   },
