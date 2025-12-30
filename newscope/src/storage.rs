@@ -26,36 +26,8 @@ pub async fn store_feed_items(
             continue;
         }
 
-        let published = entry.published.map(|d| d).unwrap_or_else(Utc::now);
-        let mut content = entry.content.as_ref().map(|c| c.body.clone().unwrap_or_default())
-            .or_else(|| entry.summary.as_ref().map(|s| s.content.clone()))
-            .unwrap_or_default();
-
-        // SCRAPING FALLBACK
-        // If content is very short (likely just a summary or empty), try to scrape the page.
-        // Threshold: 500 chars is arbitrary but reasonable for a "full article".
-        if content.len() < 500 {
-            info!("Content short ({}), attempting to scrape: {}", content.len(), url);
-            // We use a default timeout of 10s for scraping for now
-            match scraping::scrape_article_content(&url, 10).await {
-                Ok(scraped) => {
-                    if scraped.len() > content.len() {
-                        info!("Scraping successful, replaced content ({} -> {} chars)", content.len(), scraped.len());
-                        content = scraped;
-                    } else {
-                        info!("Scraping returned less content, keeping original");
-                    }
-                }
-                Err(e) => {
-                    // Log but don't fail the whole process
-                    tracing::warn!("Failed to scrape {}: {}", url, e);
-                }
-            }
-        }
-
         // 2. Check if article already exists (deduplication by URL)
-        // In a real app, we might also check by title+date or hash if URL varies.
-        // For now, simple URL check.
+        // Optimization: Do this BEFORE scraping to avoid unnecessary work for existing articles.
         let existing_id = sqlx::query_scalar::<_, i64>(
             "SELECT id FROM articles WHERE canonical_url = ?"
         )
@@ -67,6 +39,34 @@ pub async fn store_feed_items(
         let article_id = if let Some(id) = existing_id {
             id
         } else {
+            // New article: extract content and potentially scrape
+            let published = entry.published.map(|d| d).unwrap_or_else(Utc::now);
+            let mut content = entry.content.as_ref().map(|c| c.body.clone().unwrap_or_default())
+                .or_else(|| entry.summary.as_ref().map(|s| s.content.clone()))
+                .unwrap_or_default();
+
+            // SCRAPING FALLBACK
+            // If content is very short (likely just a summary or empty), try to scrape the page.
+            // Threshold: 500 chars is arbitrary but reasonable for a "full article".
+            if content.len() < 500 {
+                info!("Content short ({}), attempting to scrape: {}", content.len(), url);
+                // We use a default timeout of 10s for scraping for now
+                match scraping::scrape_article_content(&url, 10).await {
+                    Ok(scraped) => {
+                        if scraped.len() > content.len() {
+                            info!("Scraping successful, replaced content ({} -> {} chars)", content.len(), scraped.len());
+                            content = scraped;
+                        } else {
+                            info!("Scraping returned less content, keeping original");
+                        }
+                    }
+                    Err(e) => {
+                        // Log but don't fail the whole process
+                        tracing::warn!("Failed to scrape {}: {}", url, e);
+                    }
+                }
+            }
+
             // Insert new article
             let id = sqlx::query_scalar::<_, i64>(
                 r#"

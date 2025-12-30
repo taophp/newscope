@@ -1,4 +1,4 @@
-use mynewslens::sessions::{create_session, get_messages, get_session, list_sessions, store_message};
+use newscope::sessions::{create_session, get_messages, get_session, list_sessions, store_message};
 use sqlx::sqlite::SqlitePoolOptions;
 
 async fn setup_test_db() -> sqlx::SqlitePool {
@@ -154,4 +154,3 @@ async fn test_multiple_sessions() {
     assert_eq!(user1_sessions.len(), 2);
     assert_eq!(user2_sessions.len(), 1);
 }
-

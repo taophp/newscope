@@ -415,10 +415,18 @@ async fn run_worker(
                             }
                             Err(e) => {
                                 error!("worker: failed to fetch feed {}: {}", feed_id, e);
-                                // Backoff on error? For now just schedule next poll normally
-                                let next_poll = Utc::now() + chrono::Duration::minutes(interval);
-                                let _ = sqlx::query("UPDATE feeds SET next_poll_at = ? WHERE id = ?")
+                                
+                                // Scheduler Backoff: Double the interval to avoid spamming a failing feed
+                                // Cap at 24 hours (1440 minutes)
+                                let new_interval = (interval * 2).min(1440);
+                                info!("worker: feed {} failed, backing off interval from {} to {} minutes", feed_id, interval, new_interval);
+                                
+                                let next_poll = Utc::now() + chrono::Duration::minutes(new_interval);
+                                let _ = sqlx::query(
+                                    "UPDATE feeds SET next_poll_at = ?, poll_interval_minutes = ? WHERE id = ?"
+                                )
                                     .bind(next_poll)
+                                    .bind(new_interval)
                                     .bind(feed_id)
                                     .execute(&*_db_pool)
                                     .await;

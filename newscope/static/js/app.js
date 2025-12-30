@@ -960,6 +960,15 @@ const App = {
             </div>
         </div>
     `;
+
+    // Fix: Stop propagation on source link to prevent card toggle
+    const sourceLink = header.querySelector('.header-source');
+    if (sourceLink) {
+      sourceLink.addEventListener('click', (e) => {
+        e.stopPropagation();
+      });
+    }
+
     card.appendChild(header);
 
     // Collapsible Body

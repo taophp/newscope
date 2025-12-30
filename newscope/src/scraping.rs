@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
-use scraper::{Html, Selector};
 use std::time::Duration;
 use tracing::{info, warn};
+use std::io::Cursor;
 
 /// Scrapes the content of an article from the given URL.
 /// Returns the extracted text content.
@@ -20,52 +20,38 @@ pub async fn scrape_article_content(url: &str, timeout_secs: u64) -> Result<Stri
         return Err(anyhow::anyhow!("article fetch failed with status: {}", status));
     }
 
-    let html_content = response.text().await.context("failed to read response body")?;
-    let document = Html::parse_document(&html_content);
+    // Readability requires a Reader, so we fetch bytes
+    let bytes = response.bytes().await.context("failed to read response body")?;
+    let mut reader = Cursor::new(bytes);
 
-    // Heuristic: try to find the main content
-    // 1. <article> tag
-    // 2. <main> tag
-    // 3. Fallback to body (maybe too noisy?)
-    
-    let selectors = ["article", "main", ".post-content", ".entry-content", "#content"];
-    
-    for selector_str in selectors {
-        if let Ok(selector) = Selector::parse(selector_str) {
-            if let Some(element) = document.select(&selector).next() {
-                // Found a matching element, extract HTML and convert to Markdown
-                let html = element.html();
-                let markdown = html2text::from_read(html.as_bytes(), 80);
-                
-                // html2text::from_read returns a Result, handle it
-                if let Ok(markdown) = markdown {
-                    if !markdown.is_empty() {
-                        info!("scraping: found content using selector '{}', converted to {} chars markdown", 
-                              selector_str, markdown.len());
-                        return Ok(markdown);
-                    }
+    // Use readability to extract the main content
+    // We construct a Url object for readability to resolve relative links
+    let url_obj = url::Url::parse(url).context("failed to parse article URL")?;
+
+    match readability::extractor::extract(&mut reader, &url_obj) {
+        Ok(product) => {
+            // product.content contains the HTML of the main article content
+            let html = product.content;
+            
+            // Convert HTML to Markdown for cleaner LLM input
+            // We use a width of 80 for wrapping
+            match html2text::from_read(html.as_bytes(), 80) {
+                Ok(markdown) => {
+                    info!("scraping: readability extracted {} chars markdown from {}", markdown.len(), url);
+                    Ok(markdown)
+                },
+                Err(e) => {
+                    warn!("scraping: failed to convert extracted HTML to markdown: {}", e);
+                    // Fallback: return the HTML title + text content if markdown conversion fails
+                    // readability also provides .text, but it might be less structured than markdown
+                    Ok(product.text)
                 }
             }
+        },
+        Err(e) => {
+            warn!("scraping: readability failed for {}: {}", url, e);
+            // Return empty string as per previous behavior on failure, or could error out
+            Ok(String::new())
         }
     }
-
-    // Fallback: just get all paragraphs
-    if let Ok(p_selector) = Selector::parse("p") {
-        let mut full_html = String::new();
-        for element in document.select(&p_selector) {
-            full_html.push_str(&element.html());
-            full_html.push_str("\n");
-        }
-            
-        if !full_html.is_empty() {
-             let markdown = html2text::from_read(full_html.as_bytes(), 80);
-             if let Ok(markdown) = markdown {
-                 info!("scraping: fallback to all <p> tags, converted to {} chars markdown", markdown.len());
-                 return Ok(markdown);
-             }
-        }
-    }
-
-    warn!("scraping: could not extract content for {}", url);
-    Ok(String::new())
 }

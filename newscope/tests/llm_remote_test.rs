@@ -1,10 +1,10 @@
-use mynewslens::llm::remote::RemoteLlmProvider;
-use mynewslens::llm::{LlmProvider, LlmRequest};
+use newscope::llm::remote::RemoteLlmProvider;
+use newscope::llm::{LlmProvider, LlmRequest};
 
 #[tokio::test]
 async fn test_remote_provider_with_mock() {
     let mut server = mockito::Server::new_async().await;
-    
+
     // Mock successful OpenAI response
     let mock = server
         .mock("POST", "/")
@@ -30,11 +30,7 @@ async fn test_remote_provider_with_mock() {
         .create_async()
         .await;
 
-    let provider = RemoteLlmProvider::new(
-        server.url(),
-        "fake-api-key",
-        "gpt-4o-mini",
-    );
+    let provider = RemoteLlmProvider::new(server.url(), "fake-api-key", "gpt-4o-mini");
 
     let request = LlmRequest {
         prompt: "Test prompt".to_string(),
@@ -85,13 +81,11 @@ async fn test_remote_provider_summarize_with_mock() {
         .create_async()
         .await;
 
-    let provider = RemoteLlmProvider::new(
-        server.url(),
-        "fake-api-key",
-        "gpt-4o-mini",
-    );
+    let provider = RemoteLlmProvider::new(server.url(), "fake-api-key", "gpt-4o-mini");
 
-    let result = provider.summarize("Long article content here...", 200).await;
+    let result = provider
+        .summarize("Long article content here...", 200)
+        .await;
 
     assert!(result.is_ok());
     let summary = result.unwrap();
@@ -117,11 +111,7 @@ async fn test_remote_provider_error_handling() {
         .create_async()
         .await;
 
-    let provider = RemoteLlmProvider::new(
-        server.url(),
-        "fake-api-key",
-        "gpt-4o-mini",
-    );
+    let provider = RemoteLlmProvider::new(server.url(), "fake-api-key", "gpt-4o-mini");
 
     let request = LlmRequest {
         prompt: "Test".to_string(),
@@ -154,11 +144,7 @@ async fn test_remote_provider_timeout() {
         .create_async()
         .await;
 
-    let provider = RemoteLlmProvider::new(
-        server.url(),
-        "fake-api-key",
-        "gpt-4o-mini",
-    );
+    let provider = RemoteLlmProvider::new(server.url(), "fake-api-key", "gpt-4o-mini");
 
     let request = LlmRequest {
         prompt: "Test".to_string(),
