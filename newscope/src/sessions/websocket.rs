@@ -213,196 +213,197 @@ pub fn chat_websocket(
                                         })
                                         .collect();
 
-                                    // STREAMING MODE: Send articles as individual cards
-                                    for (article_id, headline, bullets_json, details, article_lang, _relevance, url, feed_title) in article_data {
-                                        // Construct raw summary
-                                        // Borrow the inner string to avoid moving `details` so it can still be used later.
-                                        let raw_summary = if let Some(ref d) = details {
-                                            d.clone()
-                                        } else {
-                                            let bullets: Vec<String> = serde_json::from_str(&bullets_json).unwrap_or_default();
-                                            bullets.join(" ")
-                                        };
-
-                                        let theme = feed_title.clone().unwrap_or_else(|| "Actualité".to_string());
-                                        let source_name = feed_title.unwrap_or_else(|| "Unknown".to_string());
-
-                                        // JIT REFINEMENT: Translate & Fix Truncation & Remove Markdown
-                                        // We call the LLM to ensure the content is in the user's language and properly formatted.
-                                        
-                                        // Truncate input to avoid context limits and reduce noise (e.g. footers/links)
-                                        let input_text = if raw_summary.len() > 2000 {
-                                            format!("{}...", &raw_summary[..2000])
-                                        } else {
-                                            raw_summary.clone()
-                                        };
-
-                                        let refine_prompt = format!(
-                                            "Task: Translate and refine this news item for a {} speaker.
                                     
-                                    Original Headline: {}
-                                    Content Snippet: {}
-
-
-                                    Requirements:
-                                    1. Language: {} ONLY (for the content).
-                                    2. No truncation: Keep the content complete.
-                                    3. No Markdown: Output PLAIN TEXT only.
-                                    4. Format: Use the exact format below. DO NOT translate the keywords TITLE, SUMMARY, and CONTEXT.
-                                    TITLE: <title>
-                                    SUMMARY: <summary>
-                                    CONTEXT: <emoji> <name>
-                                    (Examples for CONTEXT: '🇷🇺 Russie', '🌍 Monde', '🌐 Internet', '🇺🇸 USA')
-                                    5. No chatter: Do NOT add intro/outro text. Do NOT add notes like '(Note: ...)'.
-                                    6. STRICT: Return ONLY the TITLE, SUMMARY and CONTEXT sections.
-                                    ",
-                                            match user_profile_lang.as_str() {
-                                                "fr" => "French",
-                                                "es" => "Spanish",
-                                                "de" => "German",
-                                                "it" => "Italian",
-                                                _ => "English"
-                                            },
-                                            headline,
-                                            input_text,
-                                            match user_profile_lang.as_str() {
-                                                "fr" => "French",
-                                                "es" => "Spanish",
-                                                "de" => "German",
-                                                "it" => "Italian",
-                                                _ => "English"
-                                            }
-                                        );
-
-                                        let (final_title, final_summary, final_context, final_lang) = match llm_provider.generate(crate::llm::LlmRequest {
-                                            prompt: refine_prompt,
-                                            max_tokens: Some(600),
-                                            temperature: Some(0.3),
-                                            timeout_seconds: Some(45),
-                                        }).await {
-                                            Ok(resp) => {
-                                                // Robust parsing of TITLE: ... SUMMARY: ... CONTEXT: ...
-                                                // We accept French variants as fallback if the model disobeys instructions
-                                                let content = resp.content.trim();
-                                                
-                                                let find_marker = |text: &str, markers: &[&str]| -> Option<(usize, usize)> {
-                                                    for m in markers {
-                                                        if let Some(idx) = text.find(m) {
-                                                            return Some((idx, m.len()));
-                                                        }
-                                                    }
-                                                    None
+                                    // PREPARE STREAMING: Use buffered stream for parallel JIT refinement
+                                    // We want to process N articles in parallel to hide LLM latency, 
+                                    // but emit them in order to respect relevance sorting.
+                                    let stream = rocket::futures::stream::iter(article_data)
+                                        .map(|(article_id, headline, bullets_json, details, article_lang, _relevance, url, feed_title)| {
+                                            let llm_provider_clone = llm_provider.clone();
+                                            let user_profile_lang_clone = user_profile_lang.clone();
+                                            
+                                            async move {
+                                                // Construct raw summary
+                                                let raw_summary = if let Some(ref d) = details {
+                                                    d.clone()
+                                                } else {
+                                                    let bullets: Vec<String> = serde_json::from_str(&bullets_json).unwrap_or_default();
+                                                    bullets.join(" ")
                                                 };
 
-                                                let title_marker = find_marker(content, &["TITLE:", "TITRE:", "Title:", "Titre:"]);
-                                                let summary_marker = find_marker(content, &["SUMMARY:", "RESUME:", "RÉSUMÉ:", "Summary:", "Resume:", "Résumé:"]);
-                                                let context_marker = find_marker(content, &["CONTEXT:", "CONTEXTE:", "Context:", "Contexte:"]);
-                                                
-                                                if let (Some((t_idx, t_len)), Some((s_idx, s_len))) = (title_marker, summary_marker) {
-                                                    if t_idx < s_idx {
-                                                        let title_part = content[t_idx + t_len..s_idx].trim().to_string();
-                                                        
-                                                        // Determine end of summary (before CONTEXT if present, else end of string)
-                                                        let summary_end = if let Some((c_idx, _)) = context_marker {
-                                                            if c_idx > s_idx { c_idx } else { content.len() }
-                                                        } else {
-                                                            content.len()
+                                                let theme = feed_title.clone().unwrap_or_else(|| "Actualité".to_string());
+                                                let source_name = feed_title.unwrap_or_else(|| "Unknown".to_string());
+
+                                                // Truncate input
+                                                let input_text = if raw_summary.len() > 2000 {
+                                                    format!("{}...", &raw_summary[..2000])
+                                                } else {
+                                                    raw_summary.clone()
+                                                };
+
+                                                let refine_prompt = format!(
+                                                    "Task: Translate and refine this news item for a {} speaker.
+                                            
+                                            Original Headline: {}
+                                            Content Snippet: {}
+
+                                            Requirements:
+                                            1. Language: {} ONLY.
+                                            2. No truncation.
+                                            3. No Markdown: Output PLAIN TEXT only.
+                                            4. Format: Use the exact format below.
+                                            TITLE: <title>
+                                            SUMMARY: <summary>
+                                            CONTEXT: <emoji> <name>
+                                            (Examples for CONTEXT: '🇷🇺 Russie', '🌍 Monde', '🇺🇸 USA')
+                                            5. No chatter.
+                                            6. STRICT: Return ONLY the TITLE, SUMMARY and CONTEXT sections.
+                                            ",
+                                                    match user_profile_lang_clone.as_str() {
+                                                        "fr" => "French",
+                                                        "es" => "Spanish",
+                                                        "de" => "German",
+                                                        "it" => "Italian",
+                                                        _ => "English"
+                                                    },
+                                                    headline,
+                                                    input_text,
+                                                    match user_profile_lang_clone.as_str() {
+                                                        "fr" => "French",
+                                                        "es" => "Spanish",
+                                                        "de" => "German",
+                                                        "it" => "Italian",
+                                                        _ => "English"
+                                                    }
+                                                );
+
+                                                let (final_title, final_summary, final_context, final_lang) = match llm_provider_clone.generate(crate::llm::LlmRequest {
+                                                    prompt: refine_prompt,
+                                                    max_tokens: Some(600),
+                                                    temperature: Some(0.3),
+                                                    timeout_seconds: Some(45),
+                                                }).await {
+                                                    Ok(resp) => {
+                                                        let content = resp.content.trim();
+                                                        let find_marker = |text: &str, markers: &[&str]| -> Option<(usize, usize)> {
+                                                            for m in markers {
+                                                                if let Some(idx) = text.find(m) {
+                                                                    return Some((idx, m.len()));
+                                                                }
+                                                            }
+                                                            None
                                                         };
 
-                                                        let mut summary_part = content[s_idx + s_len..summary_end].trim().to_string();
+                                                        let title_marker = find_marker(content, &["TITLE:", "TITRE:", "Title:", "Titre:"]);
+                                                        let summary_marker = find_marker(content, &["SUMMARY:", "RESUME:", "RÉSUMÉ:", "Summary:", "Resume:", "Résumé:"]);
+                                                        let context_marker = find_marker(content, &["CONTEXT:", "CONTEXTE:", "Context:", "Contexte:"]);
+                                                        
+                                                        if let (Some((t_idx, t_len)), Some((s_idx, s_len))) = (title_marker, summary_marker) {
+                                                            if t_idx < s_idx {
+                                                                let title_part = content[t_idx + t_len..s_idx].trim().to_string();
+                                                                let summary_end = if let Some((c_idx, _)) = context_marker {
+                                                                    if c_idx > s_idx { c_idx } else { content.len() }
+                                                                } else { content.len() };
 
-                                                        // Extract Context if present
-                                                        let context_part = if let Some((c_idx, c_len)) = context_marker {
-                                                            if c_idx > s_idx {
-                                                                content[c_idx + c_len..].trim().lines().next().unwrap_or("").trim().to_string()
+                                                                let mut summary_part = content[s_idx + s_len..summary_end].trim().to_string();
+                                                                let context_part = if let Some((c_idx, c_len)) = context_marker {
+                                                                    if c_idx > s_idx {
+                                                                        content[c_idx + c_len..].trim().lines().next().unwrap_or("").trim().to_string()
+                                                                    } else { String::new() }
+                                                                } else { String::new() };
+
+                                                                // Heuristic cleanup
+                                                                if let Some(note_idx) = summary_part.rfind("(Note:") { if note_idx > 10 { summary_part.truncate(note_idx); } }
+                                                                
+                                                                let summary_clean = summary_part.trim().to_string();
+                                                                if !title_part.is_empty() && !summary_clean.is_empty() {
+                                                                    (title_part, summary_clean, context_part, user_profile_lang_clone.clone())
+                                                                } else {
+                                                                    (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
+                                                                }
                                                             } else {
-                                                                String::new()
+                                                                (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
                                                             }
                                                         } else {
-                                                            String::new()
-                                                        };
-
-                                                        // Heuristic to strip common trailing notes if the model ignores checking
-                                                        // e.g. "(Note: ...)" "\nNote: ..."
-                                                        // We look for the last occurrence of such patterns if they are near the end
-                                                        if let Some(note_idx) = summary_part.rfind("(Note:") {
-                                                            if note_idx > 10 { summary_part.truncate(note_idx); }
-                                                        } else if let Some(note_idx) = summary_part.rfind("(Nota:") {
-                                                            if note_idx > 10 { summary_part.truncate(note_idx); }
-                                                        } else if let Some(note_idx) = summary_part.rfind("\nNote:") {
-                                                            if note_idx > 10 { summary_part.truncate(note_idx); }
+                                                           if !content.is_empty() && content.len() > 20 {
+                                                                (headline.clone(), content.to_string(), String::new(), user_profile_lang_clone.clone())
+                                                            } else {
+                                                                (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
+                                                            }
                                                         }
-
-                                                        let summary_clean = summary_part.trim().to_string();
-                                                        
-                                                        if !title_part.is_empty() && !summary_clean.is_empty() {
-                                                             (title_part, summary_clean, context_part, user_profile_lang.clone())
-                                                        } else {
-                                                            error!("JIT Refinement: parsed empty fields");
-                                                            (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
-                                                        }
-                                                    } else {
-                                                        error!("JIT Refinement: markers out of order");
+                                                    }
+                                                    Err(e) => {
+                                                        error!("JIT refinement failed: {}", e);
                                                         (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
                                                     }
-                                                } else {
-                                                    // Markers not found. If the response is non-empty, use it as summary
-                                                    // This handles cases where the model forgets "SUMMARY:" but produces good text.
-                                                    if !content.is_empty() && content.len() > 20 {
-                                                        // Assume the whole text is the summary, keep original title
-                                                        info!("JIT Refinement: markers missing, using full content as summary");
-                                                        (headline.clone(), content.to_string(), String::new(), user_profile_lang.clone())
-                                                    } else {
-                                                        error!("JIT Refinement: response too short or invalid");
-                                                        (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
-                                                    }
+                                                };
+
+                                                // Return structured result
+                                                (
+                                                    article_id, 
+                                                    final_title, 
+                                                    final_summary, 
+                                                    final_context, 
+                                                    final_lang, 
+                                                    url, 
+                                                    theme, 
+                                                    source_name, 
+                                                    article_lang,
+                                                    details
+                                                )
+                                            }
+                                        })
+                                        .buffered(4); // PARALLELISM: 4 concurrent LLM requests
+
+                                    // Consume the stream
+                                    stream.for_each(|(article_id, final_title, final_summary, final_context, final_lang, url, theme, source_name, origin_lang, details)| {
+                                        let tx_inner = tx_clone.clone();
+                                        let pool_inner = pool.clone();
+                                        let context_bg_inner = article_context_bg.clone();
+                                        let session_id_inner = session_id;
+                                        let user_id_inner = user_id;
+
+                                        async move {
+                                            // Update shared context
+                                            if let Ok(mut ctx) = context_bg_inner.lock() {
+                                                ctx.push(ArticleContext {
+                                                    title: final_title.clone(),
+                                                    summary: final_summary.clone(),
+                                                    content: details.clone(),
+                                                });
+                                            }
+
+                                            // Send card
+                                            let card = json!({
+                                                "type": "news_card",
+                                                "article": {
+                                                    "id": article_id,
+                                                    "title": final_title,
+                                                    "summary": final_summary,
+                                                    "source": { "name": source_name },
+                                                    "url": url,
+                                                    "theme": theme,
+                                                    "lang": final_lang,
+                                                    "origin_lang": origin_lang,
+                                                    "context_region": final_context
                                                 }
-                                            }
-                                            Err(e) => {
-                                                error!("JIT refinement failed: {}", e);
-                                                (headline.clone(), raw_summary.clone(), String::new(), article_lang.clone())
-                                            }
-                                        };
-
-                                        // Update shared context
-                                        if let Ok(mut ctx) = article_context_bg.lock() {
-                                            ctx.push(ArticleContext {
-                                                title: final_title.clone(),
-                                                summary: final_summary.clone(),
-                                                content: details.clone(), // Use details as content snippet if available
                                             });
+                                            let _ = tx_inner.send(Message::Text(serde_json::to_string(&card).unwrap()));
+
+                                            // Mark as viewed
+                                            let _ = sqlx::query(
+                                                "INSERT OR IGNORE INTO user_article_views (user_id, article_id, session_id) VALUES (?, ?, ?)"
+                                            )
+                                            .bind(user_id_inner)
+                                            .bind(article_id)
+                                            .bind(session_id_inner)
+                                            .execute(&pool_inner)
+                                            .await;
+                                            
+                                            // Small delay for progressive UI effect (even if processing was fast)
+                                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                                         }
-
-                                        // Send card (set lang to the content language)
-                                        let card = json!({
-                                            "type": "news_card",
-                                            "article": {
-                                                "id": article_id,
-                                                "title": final_title,
-                                                "summary": final_summary,
-                                                "source": { "name": source_name },
-                                                "url": url,
-                                                "theme": theme,
-                                                "lang": final_lang,
-                                                "origin_lang": article_lang,
-                                                "context_region": final_context
-                                            }
-                                        });
-                                        let _ = tx_clone.send(Message::Text(serde_json::to_string(&card).unwrap()));
-
-                                        // Mark as viewed immediately
-                                        let _ = sqlx::query(
-                                            "INSERT OR IGNORE INTO user_article_views (user_id, article_id, session_id) VALUES (?, ?, ?)"
-                                        )
-                                        .bind(user_id)
-                                        .bind(article_id)
-                                        .bind(session_id)
-                                        .execute(&pool)
-                                        .await;
-
-                                        // Small delay for progressive effect
-                                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                                    }
+                                    }).await;
 
                                     // Final message
                                     let completion_msg = match language_clone.as_str() {

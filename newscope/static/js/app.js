@@ -947,12 +947,13 @@ const App = {
         <div class="header-row">
             <a href="${this.escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer" class="header-source" title="${this.escapeHtml(sourceName)}">
                 ${sourceIconHtml}
+                <span class="source-name-text">${this.escapeHtml(sourceName)}</span>
             </a>
             <div class="header-main">
-                <h3 class="card-title">${this.escapeHtml(titleText)}</h3>
                 <div class="header-meta">
-                     <span class="meta-item meta-flag" title="${this.escapeHtml(flagTooltip)}">${flag}</span>
-                     <span class="meta-item meta-theme">${this.escapeHtml(themeText)}</span>
+                  <h3 class="card-title">${this.escapeHtml(titleText)}</h3>
+                  <span class="meta-item meta-flag" title="${this.escapeHtml(flagTooltip)}">${flag}</span>
+                  <span class="meta-item meta-theme">${this.escapeHtml(themeText)}</span>
                 </div>
             </div>
             <div class="header-toggle">
