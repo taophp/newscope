@@ -8,7 +8,11 @@ pub trait LlmProvider: Send + Sync {
     async fn generate(&self, request: LlmRequest) -> Result<LlmResponse>;
     
     /// Generate hierarchical summary for article content
+    /// Generate hierarchical summary for article content
     async fn summarize(&self, content: &str, max_tokens: usize) -> Result<Summary>;
+
+    /// Generate vector embedding for text
+    async fn embed(&self, text: &str) -> Result<Vec<f32>>;
 }
 
 /// Request structure for LLM generation

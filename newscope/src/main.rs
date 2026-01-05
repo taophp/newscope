@@ -438,6 +438,29 @@ async fn run_worker(
             Err(e) => error!("worker: failed to query feeds: {}", e),
         }
 
+        // 4. Process missing embeddings (Phase 1)
+        if let Some(provider) = &background_llm {
+            let provider = provider.clone();
+            let pool = _db_pool.clone();
+            let model = config.llm.as_ref()
+                .and_then(|l| l.remote.as_ref())
+                .and_then(|r| r.model.as_deref())
+                .unwrap_or("unknown")
+                .to_string();
+
+            // Spawn to avoid blocking the loop
+            tokio::spawn(async move {
+                if let Err(e) = newscope::processing::process_missing_embeddings(
+                    &pool,
+                    provider,
+                    &model, 
+                    20 // Limit batch size for embeddings
+                ).await {
+                     error!("Error processing embeddings: {:?}", e);
+                }
+            });
+        }
+
         select! {
             _ = tokio::time::sleep(Duration::from_secs(60)) => {
                 // Loop again

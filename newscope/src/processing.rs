@@ -320,6 +320,100 @@ pub async fn process_pending_articles(
     batch_process_articles(pool, &article_ids, provider, model).await
 }
 
+/// Convert Vec<f32> to Vec<u8> (Little Endian bytes) for BLOB storage
+fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Process articles missing embeddings
+pub async fn process_missing_embeddings(
+    pool: &SqlitePool,
+    provider: Arc<dyn LlmProvider>,
+    model: &str,
+    limit: usize,
+) -> Result<usize> {
+    // 1. Find articles needing embeddings
+    let rows = sqlx::query(
+        r#"
+        SELECT 
+            a.id, 
+            a.title, 
+            s.headline, 
+            s.bullets_json, 
+            a.content
+        FROM articles a
+        LEFT JOIN article_summaries s ON a.id = s.article_id
+        LEFT JOIN article_embeddings e ON a.id = e.article_id
+        WHERE e.article_id IS NULL
+        ORDER BY a.first_seen_at DESC
+        LIMIT ?
+        "#
+    )
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch articles for embedding")?;
+
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    info!("Found {} articles missing embeddings", rows.len());
+    let mut count = 0;
+
+    for article in rows {
+        // Construct text to embed: Title + Summary (or truncated content)
+        let article_id: i64 = article.get("id");
+        let title: String = article.get("title");
+        let headline: Option<String> = article.get("headline");
+        let bullets_json: Option<String> = article.get("bullets_json");
+        let content: String = article.get("content");
+        
+        let mut summary_text = String::new();
+        let has_summary = headline.is_some() && bullets_json.is_some();
+        
+        if has_summary {
+             let h = headline.unwrap();
+             let b_json = bullets_json.unwrap();
+             if let Ok(bullets) = serde_json::from_str::<Vec<String>>(&b_json) {
+                 summary_text = format!("{}\n{}", h, bullets.join(" "));
+             }
+        }
+        
+        if summary_text.is_empty() {
+             // Fallback to first 500 chars of content
+             summary_text = content.chars().take(500).collect();
+        }
+
+        let text_to_embed = format!("{}\n{}", title, summary_text);
+        
+        // Call LLM Embed
+        match provider.embed(&text_to_embed).await {
+            Ok(embedding) => {
+                let bytes = f32_vec_to_bytes(&embedding);
+                
+                sqlx::query(
+                    "INSERT INTO article_embeddings (article_id, embedding, model) VALUES (?, ?, ?)"
+                )
+                .bind(article_id)
+                .bind(bytes)
+                .bind(model)
+                .execute(pool)
+                .await?;
+                
+                count += 1;
+            }
+            Err(e) => {
+                error!("Failed to embed article {}: {}", article_id, e);
+                // Continue with next
+            }
+        }
+    }
+    
+    Ok(count)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
