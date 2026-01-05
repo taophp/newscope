@@ -110,18 +110,24 @@ impl LlmProvider for RemoteLlmProvider {
 
     async fn summarize(&self, content: &str, max_tokens: usize) -> Result<Summary> {
         let prompt = format!(
-            r#"Summarize the following article in a hierarchical format.
+            r#"You are a news article summarizer. Create a concise, informative summary.
 
-Provide your response as JSON with this exact structure:
+IMPORTANT INSTRUCTIONS:
+1. IGNORE all markdown formatting (###, **, __, etc.) - extract only text content
+2. Create a REAL summary of the key points (not just the first few lines)
+3. Be concise but capture the essential information from the ENTIRE article
+4. KEEP THE ORIGINAL LANGUAGE - do not translate (translation happens later)
+
+OUTPUT FORMAT (strict JSON):
 {{
-  "headline": "one-line summary (max 100 chars)",
+  "headline": "one-line summary in original language (max 100 chars)",
   "bullets": ["key point 1", "key point 2", "key point 3"],
-  "details": "optional expanded context"
+  "details": "optional additional context"
 }}
 
-Use 3-7 bullet points. Be concise and informative.
+Use 3-7 bullet points that capture the most important information.
 
-Article:
+ARTICLE TO SUMMARIZE:
 {}
 "#,
             content
@@ -146,6 +152,61 @@ Article:
             details: summary_data.details,
             usage: response.usage,
         })
+    }
+
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        // Infer embedding URL from base_url (chat endpoint)
+        // e.g. http://localhost:11434/v1/chat/completions -> http://localhost:11434/v1/embeddings
+        let embedding_url = if self.base_url.ends_with("/chat/completions") {
+            self.base_url.replace("/chat/completions", "/embeddings")
+        } else if self.base_url.ends_with("/completions") {
+             self.base_url.replace("/completions", "/embeddings")
+        } else {
+            // Fallback: assume base_url is the root, append /embeddings? 
+            // Or just try to append /embeddings if it ends in /v1
+            if self.base_url.ends_with("/v1") {
+                format!("{}/embeddings", self.base_url)
+            } else {
+                 // Risky assumption but standard for many
+                 format!("{}/embeddings", self.base_url.trim_end_matches('/'))
+            }
+        };
+
+        let req_body = EmbeddingRequest {
+            model: self.model.clone(),
+            input: text.to_string(),
+        };
+
+        let response = tokio::time::timeout(
+            self.default_timeout,
+            self.client
+                .post(&embedding_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&req_body)
+                .send(),
+        )
+        .await
+        .context("Embedding request timed out")?
+        .context("Embedding HTTP request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Embedding API error {}: {} (URL: {})", status, body, embedding_url);
+        }
+
+        let resp_body: EmbeddingResponse = response
+            .json()
+            .await
+            .context("Failed to parse Embedding response")?;
+
+        let first_embedding = resp_body
+            .data
+            .first()
+            .context("Embedding response has no data")?;
+
+        Ok(first_embedding.embedding.clone())
     }
 }
 
@@ -191,4 +252,24 @@ struct SummaryJson {
     headline: String,
     bullets: Vec<String>,
     details: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct EmbeddingRequest {
+    model: String,
+    input: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingResponse {
+    data: Vec<EmbeddingData>,
+    model: String,
+    usage: Usage,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingData {
+    object: String, // "embedding"
+    embedding: Vec<f32>,
+    index: usize,
 }
