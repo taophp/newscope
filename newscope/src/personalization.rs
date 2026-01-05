@@ -223,7 +223,7 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
             COALESCE(up.reading_speed, 250) as reading_speed,
             up.interests
          FROM users u
-         LEFT JOIN user_preferences up ON u.id = up.user_id
+         LEFT JOIN user_profiles up ON u.id = up.user_id
          WHERE u.id = ?"
     )
     .bind(user_id)
@@ -243,10 +243,28 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    // preferred_categories and keyword_boosts don't exist in schema yet
-    // Using empty defaults for now
-    let preferred_categories: Vec<String> = Vec::new();
-    let keyword_boosts: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    // Preferred categories and keyword boosts from user_preferences table
+    let prefs = sqlx::query(
+        "SELECT preference_type, preference_key, preference_value FROM user_preferences WHERE user_id = ?"
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut preferred_categories = Vec::new();
+    let mut keyword_boosts = std::collections::HashMap::new();
+
+    for pref in prefs {
+        let p_type: String = pref.get("preference_type");
+        let p_key: String = pref.get("preference_key");
+        let p_val: f32 = pref.get("preference_value");
+
+        match p_type.as_str() {
+            "category_filter" if p_val > 0.0 => preferred_categories.push(p_key),
+            "keyword_boost" => { keyword_boosts.insert(p_key, p_val); },
+            _ => {}
+        }
+    }
 
     Ok(UserProfile {
         id,

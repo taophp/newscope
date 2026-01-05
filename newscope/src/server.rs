@@ -341,14 +341,14 @@ async fn register(
 
     let user_id = res.last_insert_rowid();
 
-    // Auto-create user preferences with browser language
+    // Auto-create user profile with browser language
     let browser_lang = &accept_lang.0;
     let default_interests = serde_json::json!(["technology", "science", "news"]).to_string();
 
     let _ = sqlx::query(
-        "INSERT INTO user_preferences
-         (user_id, preference_type, preference_key, preference_value, language, complexity_level, interests)
-         VALUES (?, 'profile', 'default', 1.0, ?, 'medium', ?)"
+        "INSERT INTO user_profiles
+         (user_id, language, complexity_level, interests)
+         VALUES (?, ?, 'medium', ?)"
     )
     .bind(user_id)
     .bind(browser_lang)
@@ -356,8 +356,18 @@ async fn register(
     .execute(pool)
     .await
     .map_err(|e| {
-        tracing::warn!("failed to create user preferences (non-critical): {}", e);
+        tracing::warn!("failed to create user profile (non-critical): {}", e);
     });
+
+    // Create a default granular preference (example)
+    let _ = sqlx::query(
+        "INSERT INTO user_preferences
+         (user_id, preference_type, preference_key, preference_value)
+         VALUES (?, 'category_filter', 'technology', 1.0)"
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await;
 
     // Create JWT for the new user
     match create_jwt_for_user(user_id) {
@@ -1134,9 +1144,19 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
             username TEXT NOT NULL UNIQUE,
             display_name TEXT,
             password_hash TEXT,
-            prefs_json TEXT,
             created_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
             last_login TIMESTAMP
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id INTEGER PRIMARY KEY,
+            language TEXT NOT NULL DEFAULT 'en',
+            complexity_level TEXT NOT NULL DEFAULT 'medium',
+            reading_speed INTEGER NOT NULL DEFAULT 250,
+            interests TEXT,
+            updated_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         "#,
         r#"
