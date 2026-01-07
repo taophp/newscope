@@ -97,14 +97,16 @@ impl LlmProvider for RemoteLlmProvider {
             .first()
             .context("LLM response has no choices")?;
 
+        let usage = UsageMetadata {
+            prompt_tokens: resp_body.usage.prompt_tokens.unwrap_or(0),
+            completion_tokens: resp_body.usage.completion_tokens.unwrap_or(0),
+            total_tokens: resp_body.usage.total_tokens.unwrap_or(0),
+        };
+
         Ok(LlmResponse {
             content: choice.message.content.clone(),
-            usage: UsageMetadata {
-                prompt_tokens: resp_body.usage.prompt_tokens,
-                completion_tokens: resp_body.usage.completion_tokens,
-                total_tokens: resp_body.usage.total_tokens,
-            },
-            model: resp_body.model,
+            usage,
+            model: resp_body.model.unwrap_or_else(|| self.model.clone()),
         })
     }
 
@@ -142,9 +144,12 @@ ARTICLE TO SUMMARIZE:
 
         let response = self.generate(request).await?;
 
-        // Try to parse as JSON
-        let summary_data: SummaryJson = serde_json::from_str(&response.content)
-            .context("Failed to parse LLM summary as JSON")?;
+        // Robust JSON extraction: handle markdown backticks, preamble, etc.
+        let cleaned_json = super::extract_json_from_text(&response.content)
+            .context("No valid JSON found in LLM summary response")?;
+
+        let summary_data: SummaryJson = serde_json::from_str(&cleaned_json)
+            .context(format!("Failed to parse LLM summary as JSON. Input was: {}", cleaned_json))?;
 
         Ok(Summary {
             headline: summary_data.headline,
@@ -157,7 +162,9 @@ ARTICLE TO SUMMARIZE:
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         // Infer embedding URL from base_url (chat endpoint)
         // e.g. http://localhost:11434/v1/chat/completions -> http://localhost:11434/v1/embeddings
-        let embedding_url = if self.base_url.ends_with("/chat/completions") {
+        let embedding_url = if self.base_url.ends_with("/embeddings") {
+            self.base_url.clone()
+        } else if self.base_url.ends_with("/chat/completions") {
             self.base_url.replace("/chat/completions", "/embeddings")
         } else if self.base_url.ends_with("/completions") {
              self.base_url.replace("/completions", "/embeddings")
@@ -196,17 +203,31 @@ ARTICLE TO SUMMARIZE:
             anyhow::bail!("Embedding API error {}: {} (URL: {})", status, body, embedding_url);
         }
 
-        let resp_body: EmbeddingResponse = response
-            .json()
-            .await
-            .context("Failed to parse Embedding response")?;
+        let body_text = response.text().await.context("Failed to read embedding response body")?;
+        
+        // Try parsing as standard OpenAI response
+        match serde_json::from_str::<EmbeddingResponse>(&body_text) {
+            Ok(resp_body) => {
+                if let Some(first) = resp_body.data.first() {
+                    return Ok(first.embedding.clone());
+                }
+            }
+            Err(e) => {
+                // Fallback: try parsing as a raw list of floats (some old/direct providers do this)
+                if let Ok(raw_vec) = serde_json::from_str::<Vec<f32>>(&body_text) {
+                    return Ok(raw_vec);
+                }
+                // Fallback: try parsing as a single embedding object
+                #[derive(Deserialize)] struct SingleEmbed { embedding: Vec<f32> }
+                if let Ok(single) = serde_json::from_str::<SingleEmbed>(&body_text) {
+                    return Ok(single.embedding);
+                }
+                
+                anyhow::bail!("Failed to parse Embedding response: {} (Body: {})", e, body_text);
+            }
+        }
 
-        let first_embedding = resp_body
-            .data
-            .first()
-            .context("Embedding response has no data")?;
-
-        Ok(first_embedding.embedding.clone())
+        anyhow::bail!("Embedding response has no data: {}", body_text);
     }
 }
 
@@ -229,7 +250,7 @@ struct Message {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiResponse {
-    model: String,
+    model: Option<String>,
     choices: Vec<Choice>,
     usage: Usage,
 }
@@ -241,9 +262,12 @@ struct Choice {
 
 #[derive(Debug, Deserialize)]
 struct Usage {
-    prompt_tokens: usize,
-    completion_tokens: usize,
-    total_tokens: usize,
+    #[serde(default)]
+    prompt_tokens: Option<usize>,
+    #[serde(default)]
+    completion_tokens: Option<usize>,
+    #[serde(default)]
+    total_tokens: Option<usize>,
 }
 
 // Internal structure for parsing summary JSON
@@ -263,13 +287,15 @@ struct EmbeddingRequest {
 #[derive(Debug, Deserialize)]
 struct EmbeddingResponse {
     data: Vec<EmbeddingData>,
-    model: String,
-    usage: Usage,
+    model: Option<String>,
+    usage: Option<Usage>,
 }
 
 #[derive(Debug, Deserialize)]
 struct EmbeddingData {
-    object: String, // "embedding"
+    #[serde(default)]
+    object: Option<String>, // "embedding"
     embedding: Vec<f32>,
-    index: usize,
+    #[serde(default)]
+    index: Option<usize>,
 }

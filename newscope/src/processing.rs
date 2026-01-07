@@ -4,7 +4,6 @@ use tracing::{info, warn, error};
 use std::sync::Arc;
 
 use crate::llm::{LlmProvider, summarizer, LlmRequest};
-use crate::storage;
 
 /// Helper to create a processing job
 async fn create_processing_job(
@@ -107,7 +106,8 @@ async fn classify_article(
 pub async fn batch_process_articles(
     pool: &SqlitePool,
     article_ids: &[i64],
-    provider: Arc<dyn LlmProvider>,
+    summarization_provider: Arc<dyn LlmProvider>,
+    personalization_provider: Option<Arc<dyn LlmProvider>>,
     model: &str,
 ) -> Result<usize> {
     if article_ids.is_empty() {
@@ -122,7 +122,7 @@ pub async fn batch_process_articles(
     
     for chunk in article_ids.chunks(BATCH_SIZE) {
         for &article_id in chunk {
-            match process_single_article(pool, article_id, provider.clone(), model).await {
+            match process_single_article(pool, article_id, summarization_provider.clone(), personalization_provider.clone(), model).await {
                 Ok(_) => {
                     processed_count += 1;
                 }
@@ -147,7 +147,8 @@ pub async fn batch_process_articles(
 async fn process_single_article(
     pool: &SqlitePool,
     article_id: i64,
-    llm_provider: Arc<dyn LlmProvider>,
+    summarization_provider: Arc<dyn LlmProvider>,
+    personalization_provider: Option<Arc<dyn LlmProvider>>,
     model: &str,
 ) -> Result<()> {
     // 1. Create job
@@ -206,11 +207,11 @@ async fn process_single_article(
             .context("Failed to convert HTML to Markdown")?;
         
         // Summarize
-        let summary = summarizer::summarize_article(llm_provider.as_ref(), &markdown_content, 500).await;
+        let summary = summarizer::summarize_article(summarization_provider.as_ref(), &markdown_content, 500).await;
         
         // Classify
         let categories = classify_article(
-            llm_provider.as_ref(),
+            summarization_provider.as_ref(),
             &summary.headline,
             &summary.bullets
         ).await.unwrap_or_default();
@@ -246,28 +247,30 @@ async fn process_single_article(
         .await?;
         
         // 4. Personalize for all active users (Phase 8: NEW!)
-        info!("Starting personalization for article {} for active users", article_id);
-        match crate::personalize_worker::personalize_for_users(
-            pool,
-            article_id,
-            &summary,
-            llm_provider.clone(),
-            model,
-        )
-        .await
-        {
-            Ok(count) => {
-                info!(
-                    "Successfully personalized article {} for {} users",
-                    article_id, count
-                );
-            }
-            Err(e) => {
-                // Don't fail the whole job if personalization fails
-                warn!(
-                    "Failed to personalize article {} for users: {}",
-                    article_id, e
-                );
+        if let Some(personalization_llm) = personalization_provider {
+            info!("Starting personalization for article {} for active users", article_id);
+            match crate::personalize_worker::personalize_for_users(
+                pool,
+                article_id,
+                &summary,
+                personalization_llm,
+                model,
+            )
+            .await
+            {
+                Ok(count) => {
+                    info!(
+                        "Successfully personalized article {} for {} users",
+                        article_id, count
+                    );
+                }
+                Err(e) => {
+                    // Don't fail the whole job if personalization fails
+                    warn!(
+                        "Failed to personalize article {} for users: {}",
+                        article_id, e
+                    );
+                }
             }
         }
         
@@ -293,7 +296,8 @@ async fn process_single_article(
 /// Process all pending articles (those with processing_status = 'pending')
 pub async fn process_pending_articles(
     pool: &SqlitePool,
-    provider: Arc<dyn LlmProvider>,
+    summarization_provider: Arc<dyn LlmProvider>,
+    personalization_provider: Option<Arc<dyn LlmProvider>>,
     model: &str,
     limit: Option<usize>,
 ) -> Result<usize> {
@@ -317,7 +321,7 @@ pub async fn process_pending_articles(
     }
     
     info!("Found {} pending articles to process", article_ids.len());
-    batch_process_articles(pool, &article_ids, provider, model).await
+    batch_process_articles(pool, &article_ids, summarization_provider, personalization_provider, model).await
 }
 
 /// Convert Vec<f32> to Vec<u8> (Little Endian bytes) for BLOB storage
@@ -329,7 +333,7 @@ fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
 pub async fn process_missing_embeddings(
     pool: &SqlitePool,
     provider: Arc<dyn LlmProvider>,
-    model: &str,
+    _model: &str,
     limit: usize,
 ) -> Result<usize> {
     // 1. Find articles needing embeddings
@@ -343,8 +347,8 @@ pub async fn process_missing_embeddings(
             a.content
         FROM articles a
         LEFT JOIN article_summaries s ON a.id = s.article_id
-        LEFT JOIN article_embeddings e ON a.id = e.article_id
-        WHERE e.article_id IS NULL
+        LEFT JOIN vec_articles v ON a.id = v.article_id
+        WHERE v.article_id IS NULL
         ORDER BY a.first_seen_at DESC
         LIMIT ?
         "#
@@ -393,11 +397,10 @@ pub async fn process_missing_embeddings(
                 let bytes = f32_vec_to_bytes(&embedding);
                 
                 sqlx::query(
-                    "INSERT INTO article_embeddings (article_id, embedding, model) VALUES (?, ?, ?)"
+                    "INSERT INTO vec_articles (article_id, embedding) VALUES (?, ?)"
                 )
                 .bind(article_id)
                 .bind(bytes)
-                .bind(model)
                 .execute(pool)
                 .await?;
                 

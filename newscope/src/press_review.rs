@@ -231,14 +231,38 @@ pub async fn generate_press_review(
         });
     }
 
-    // 4. Calculate Final Score with Exponential Half-Life Decay
-    // FinalScore = RelevanceScore * 2^(-Age / T1/2)
+    // 4. Calculate Final Score with Semantic Similarity & Exponential Half-Life Decay
+    // Fetch user vector
+    let user_vector = crate::personalization::get_user_vector(pool, user_id).await.unwrap_or(None);
+    
     let mut scored_articles = Vec::new();
     for row in rows {
         let feed_id: i64 = row.get("feed_id");
+        let article_id: i64 = row.get("article_id");
         let relevance_score: f64 = row.get("relevance_score");
         let created_at_str: String = row.get("created_at");
         
+        // Semantic Boost
+        let mut semantic_similarity = 0.5; // Default neutral if no vectors
+        if let Some(uv) = &user_vector {
+             // Fetch article vector
+             let article_vec_row = sqlx::query(
+                 "SELECT vec_distance_cosine(v.embedding, ?) as distance 
+                  FROM vec_articles v 
+                  WHERE v.article_id = ?"
+             )
+             .bind(f32_vec_to_bytes(uv))
+             .bind(article_id)
+             .fetch_optional(pool)
+             .await
+             .unwrap_or(None);
+             
+             if let Some(avr) = article_vec_row {
+                  let distance: f64 = avr.get("distance");
+                  semantic_similarity = (1.0 - distance).max(0.0);
+             }
+        }
+
         let created_at = match DateTime::parse_from_rfc3339(&created_at_str) {
             Ok(dt) => dt.with_timezone(&Utc),
             Err(_) => {
@@ -254,11 +278,12 @@ pub async fn generate_press_review(
         
         let decay_exponent = age_secs / t_half;
         let freshness_boost = 2.0_f64.powf(-decay_exponent);
-        let final_score = relevance_score * freshness_boost;
         
-        // Manually build a row-like object or use indices
-        let _summary_id: i64 = row.get("summary_id");
-        let article_id: i64 = row.get("article_id");
+        // Final Score blend: (LLM Relevance * 0.4) + (Semantic Similarity * 0.6)
+        // Then apply freshness decay
+        let blended_score = (relevance_score * 0.4) + (semantic_similarity * 0.6);
+        let final_score = blended_score * freshness_boost;
+        
         let headline: String = row.get("personalized_headline");
         let bullets_json: String = row.get("personalized_bullets");
         
@@ -316,4 +341,9 @@ pub async fn generate_press_review(
 
     info!("Digest generated: {} articles, ~{} words", article_count, current_words);
     Ok(digest)
+}
+
+/// Helper to convert Vec<f32> to bytes for BLOB storage (bind parameter)
+fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }

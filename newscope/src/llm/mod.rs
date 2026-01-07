@@ -56,3 +56,29 @@ pub struct UsageMetadata {
 
 pub mod remote;
 pub mod summarizer;
+
+/// Helper to extract JSON from text that might contain markdown backticks or preamble
+pub fn extract_json_from_text(text: &str) -> Option<String> {
+    // 1. Try to find content between ```json and ```
+    if let Some(start) = text.find("```json") {
+        let rest = &text[start + 7..];
+        if let Some(end) = rest.find("```") {
+            return Some(rest[..end].trim().to_string());
+        }
+    }
+    
+    // 2. Try to find content between ``` and ```
+    if let Some(start) = text.find("```") {
+        let rest = &text[start + 3..];
+        if let Some(end) = rest.find("```") {
+            return Some(rest[..end].trim().to_string());
+        }
+    }
+    
+    // 3. Try to find the first '{' and last '}'
+    if let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) {
+        return Some(text[start..=end].to_string());
+    }
+    
+    None
+}

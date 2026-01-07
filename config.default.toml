@@ -77,37 +77,57 @@ max_threads = 1
 [llm.remote]
 # URL of the remote LLM API (Ollama default)
 api_url = "http://localhost:11434/v1/chat/completions"
-
 # Name of the environment variable that contains the API key
-# For Ollama, this can be any value, but the env var must exist.
 api_key_env = "OLLAMA_API_KEY"
-
-# Model to use (Ollama model name)
 model = "llama3:latest"
-
-# Timeout in seconds for remote LLM calls
 timeout_seconds = 60
-
-# Maximum tokens to generate
 max_tokens = 500
 
-# NEW: Background processing LLM (powerful, slow OK)
-# Used for article summarization during scheduled ingestion
+# Task: Dedicated Embedding Model (Native Vector Search)
+[llm.embedding]
+api_url = "http://localhost:11434/v1/embeddings"
+api_key_env = "OLLAMA_API_KEY"
+model = "all-minilm"
+timeout_seconds = 30
+
+# Task: Article Summarization
+[llm.summarization]
+api_url = "http://localhost:11434/v1/chat/completions"
+api_key_env = "OLLAMA_API_KEY"
+model = "phi4"
+timeout_seconds = 300
+max_tokens = 1000
+
+# Task: User Personalization
+[llm.personalization]
+api_url = "http://localhost:11434/v1/chat/completions"
+api_key_env = "OLLAMA_API_KEY"
+model = "phi4"
+timeout_seconds = 60
+max_tokens = 1000
+
+# Task: Interactive Chat & Press Reviews
+[llm.interaction]
+api_url = "http://localhost:11434/v1/chat/completions"
+api_key_env = "OLLAMA_API_KEY"
+model = "phi4"
+timeout_seconds = 60
+max_tokens = 500
+
+# compatibility fallbacks
 [llm.background]
 api_url = "http://localhost:11434/v1/chat/completions"
 api_key_env = "OLLAMA_API_KEY"
-model = "llama3:latest"  # or "mistral:latest" for better quality
-timeout_seconds = 3600   # 1 hour max per article (very generous)
-max_tokens = 1000        # More tokens for detailed summaries
+model = "llama3:latest"
+timeout_seconds = 3600
+max_tokens = 1000
 
-# NEW: Interactive LLM (fast, lightweight)
-# Used for press review generation and chat
 [llm.interactive]
 api_url = "http://localhost:11434/v1/chat/completions"
 api_key_env = "OLLAMA_API_KEY"
-model = "tinyllama:latest"  # or "phi3:latest" for better quality
-timeout_seconds = 60     # 1 minute max
-max_tokens = 500         # Shorter responses for speed
+model = "tinyllama:latest"
+timeout_seconds = 60
+max_tokens = 500
 
 # -------------------------
 # Logging

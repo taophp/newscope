@@ -11,9 +11,10 @@ This file provides:
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Duration;
 
 /// Database configuration section
@@ -62,9 +63,14 @@ pub struct RemoteLlmConfig {
 pub struct LlmConfig {
     pub adapter: Option<String>, // "local", "remote", "none"
     pub local: Option<LocalLlmConfig>,
-    // Backward compatibility: single remote config
+    // Fallback: single remote config
     pub remote: Option<RemoteLlmConfig>,
-    // New: separate configs for background and interactive
+    // Task-specific configs
+    pub summarization: Option<RemoteLlmConfig>,
+    pub personalization: Option<RemoteLlmConfig>,
+    pub embedding: Option<RemoteLlmConfig>,
+    pub interaction: Option<RemoteLlmConfig>,
+    // Compatibility redirects
     pub background: Option<RemoteLlmConfig>,
     pub interactive: Option<RemoteLlmConfig>,
 }
@@ -227,9 +233,17 @@ pub async fn init_db_pool(path: &str) -> Result<SqlitePool> {
     // using `run_migrations(pool)` once a `SqlitePool` is available.
 
     // Use a modest pool size for RPI and similar devices. Provide more context on connect errors.
+    let mut options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path))?
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+
+    // Load sqlite-vec extension
+    // We use the loadable extension (vec0.so) which should be in the root directory.
+    options = options.extension_with_entrypoint("./vec0", "sqlite3_vec_init");
+
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&format!("sqlite://{}", path))
+        .connect_with(options)
         .await
         .with_context(|| format!("Failed to connect to sqlite database at path: {}", path))?;
 

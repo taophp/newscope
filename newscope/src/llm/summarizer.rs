@@ -1,4 +1,4 @@
-use anyhow::Result;
+// Summarizer module
 use tracing::{info, warn};
 
 use super::{LlmProvider, Summary, UsageMetadata};

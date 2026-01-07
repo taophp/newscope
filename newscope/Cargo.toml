@@ -65,6 +65,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Cookie utilities (if using cookie-based sessions)
 cookie = "0.16"
 html2text = "0.16.4"
+sqlite-vec = "0.1.6"
 
 [features]
 # Optional features can be added here, e.g.:

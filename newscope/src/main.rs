@@ -3,13 +3,11 @@ newscope - single-binary main.rs
 This binary starts the Rocket HTTP server and runs the background worker inside the same process.
 */
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
 use common::Config;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::select;
 use tokio::sync::Notify;
@@ -22,11 +20,6 @@ use sqlx::Row;
 
 // Import modules from the lib
 use newscope::server;
-use newscope::llm;
-use newscope::ingestion;
-use newscope::storage;
-use newscope::processing;
-use newscope::personalization;
 use server::launch_rocket;
 
 #[derive(Parser, Debug)]
@@ -104,47 +97,28 @@ async fn main() -> anyhow::Result<()> {
     // Prepare a shutdown notifier to signal worker tasks
     let shutdown_notify = Arc::new(Notify::new());
 
-    // Initialize LLM providers (dual mode: background + interactive)
-    let background_llm: Option<Arc<dyn newscope::llm::LlmProvider>> = if let Some(ref llm_config) = config.llm {
-        match create_llm_provider(llm_config, LlmMode::Background) {
-            Ok(provider) => {
-                info!("Background LLM provider initialized: {:?}", llm_config.background.as_ref()
-                    .or(llm_config.remote.as_ref())
-                    .and_then(|c| c.model.as_deref())
-                    .unwrap_or("unknown"));
-                Some(Arc::from(provider))
-            }
-            Err(e) => {
-                error!("Failed to initialize background LLM provider: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Initialize LLM providers for specific tasks
+    let summarization_llm = config.llm.as_ref().and_then(|l| create_llm_provider(l, LlmMode::Summarization).ok().map(Arc::from));
+    let personalization_llm = config.llm.as_ref().and_then(|l| create_llm_provider(l, LlmMode::Personalization).ok().map(Arc::from));
+    let interaction_llm = config.llm.as_ref().and_then(|l| create_llm_provider(l, LlmMode::Interaction).ok().map(Arc::from));
+    let embedding_llm = config.llm.as_ref().and_then(|l| create_llm_provider(l, LlmMode::Embedding).ok().map(Arc::from));
 
-    let interactive_llm: Option<Arc<dyn newscope::llm::LlmProvider>> = if let Some(ref llm_config) = config.llm {
-        match create_llm_provider(llm_config, LlmMode::Interactive) {
-            Ok(provider) => {
-                info!("Interactive LLM provider initialized: {:?}", llm_config.interactive.as_ref()
-                    .or(llm_config.remote.as_ref())
-                    .and_then(|c| c.model.as_deref())
-                    .unwrap_or("unknown"));
-                Some(Arc::from(provider))
-            }
-            Err(e) => {
-                error!("Failed to initialize interactive LLM provider: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    if let Some(ref _l) = summarization_llm { info!("Summarization LLM initialized"); }
+    if let Some(ref _l) = personalization_llm { info!("Personalization LLM initialized"); }
+    if let Some(ref _l) = interaction_llm { info!("Interaction LLM initialized"); }
+    if let Some(ref _l) = embedding_llm { info!("Embedding LLM initialized"); }
 
     // If worker_only, run the worker tasks (without HTTP) and exit when shutdown requested
     if args.worker_only {
         info!("Starting in worker-only mode");
-        let worker = run_worker(db_pool.clone(), config.clone(), shutdown_notify.clone(), background_llm.clone());
+        let worker = run_worker(
+            db_pool.clone(), 
+            config.clone(), 
+            shutdown_notify.clone(), 
+            summarization_llm.clone(), 
+            personalization_llm.clone(),
+            embedding_llm.clone()
+        );
 
         // Wait for CTRL-C or worker completion (worker runs until notified)
         tokio::select! {
@@ -171,9 +145,11 @@ async fn main() -> anyhow::Result<()> {
         let w_db = db_pool.clone();
         let w_cfg = config.clone();
         let w_shutdown = shutdown_notify.clone();
-        let w_llm = background_llm.clone();
+        let w_summarize = summarization_llm.clone();
+        let w_personalize = personalization_llm.clone();
+        let w_embed = embedding_llm.clone();
         worker_handle = Some(tokio::spawn(async move {
-            if let Err(e) = run_worker(w_db, w_cfg, w_shutdown, w_llm).await {
+            if let Err(e) = run_worker(w_db, w_cfg, w_shutdown, w_summarize, w_personalize, w_embed).await {
                 error!(%e, "background worker failed");
                 Err(e)
             } else {
@@ -211,9 +187,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Launch the Rocket server (blocking until Rocket shuts down)
-    // The server is implemented in the `server` module and should return when it stops.
     info!("Launching Rocket HTTP server");
-    if let Err(e) = launch_rocket(db_pool.clone(), Some(Arc::new(config.clone()))).await {
+    if let Err(e) = launch_rocket(
+        (*db_pool).clone(), 
+        summarization_llm.clone(),
+        personalization_llm.clone(),
+        interaction_llm.clone(),
+        embedding_llm.clone(),
+        Some(Arc::new(config.clone()))
+    ).await {
         error!(%e, "Rocket server failed");
         // Signal worker to stop if running
         shutdown_notify.notify_waiters();
@@ -244,8 +226,10 @@ async fn main() -> anyhow::Result<()> {
 /// LLM mode for selecting appropriate configuration
 #[derive(Debug, Clone, Copy)]
 enum LlmMode {
-    Background,   // For article processing (slow, powerful)
-    Interactive,  // For press review & chat (fast, lightweight)
+    Summarization,
+    Personalization,
+    Embedding,
+    Interaction,
 }
 
 /// Create an LLM provider based on configuration and mode
@@ -257,11 +241,18 @@ fn create_llm_provider(llm_config: &common::LlmConfig, mode: LlmMode) -> anyhow:
             anyhow::bail!("Local LLM adapter not yet implemented in main.rs factory")
         }
         "remote" => {
-            // Choose config based on mode
+            // Choose config based on mode with fallback ladder
             let endpoint_config = match mode {
-                LlmMode::Background => llm_config.background.as_ref()
+                LlmMode::Summarization => llm_config.summarization.as_ref()
+                    .or(llm_config.background.as_ref())
                     .or(llm_config.remote.as_ref()),
-                LlmMode::Interactive => llm_config.interactive.as_ref()
+                LlmMode::Personalization => llm_config.personalization.as_ref()
+                    .or(llm_config.background.as_ref())
+                    .or(llm_config.remote.as_ref()),
+                LlmMode::Interaction => llm_config.interaction.as_ref()
+                    .or(llm_config.interactive.as_ref())
+                    .or(llm_config.remote.as_ref()),
+                LlmMode::Embedding => llm_config.embedding.as_ref()
                     .or(llm_config.remote.as_ref()),
             };
 
@@ -304,9 +295,11 @@ fn create_llm_provider(llm_config: &common::LlmConfig, mode: LlmMode) -> anyhow:
 /// For now it runs a placeholder schedule loop. Replace the TODO sections with the real logic.
 async fn run_worker(
     _db_pool: Arc<sqlx::SqlitePool>,
-    config: Config,
+    config: common::Config,
     shutdown_notify: Arc<Notify>,
-    background_llm: Option<Arc<dyn newscope::llm::LlmProvider>>,
+    summarization_llm: Option<Arc<dyn newscope::llm::LlmProvider>>,
+    personalization_llm: Option<Arc<dyn newscope::llm::LlmProvider>>,
+    embedding_llm: Option<Arc<dyn newscope::llm::LlmProvider>>,
 ) -> anyhow::Result<()> {
     info!(
         "worker: initializing scheduler with times: {:?}",
@@ -360,33 +353,33 @@ async fn run_worker(
                                         // 3. Process new articles with LLM if configured
                                         if !article_ids.is_empty() {
                                             new_items_found = true;
-                                            if let Some(provider) = &background_llm {
-                                                info!("Processing {} new articles with LLM...", article_ids.len());
-                                                // Spawn processing in background or run here?
-                                                // For simplicity in this worker loop, we await it, but we might want to spawn it.
-                                                // Given we have concurrency limit on fetches, maybe awaiting is fine or spawn.
-                                                // Let's spawn to not block the fetch slots, but we need to clone the provider.
-                                                let provider = provider.clone(); // Clone the Arc
+                                            
+                                            // Handle Summarization
+                                            if let Some(provider) = &summarization_llm {
+                                                info!("Summarizing {} new articles...", article_ids.len());
+                                                let provider = provider.clone();
                                                 let pool = _db_pool.clone();
-                                                
-                                                // Extract model name for processing
                                                 let model = config.llm.as_ref()
-                                                    .and_then(|l| l.remote.as_ref())
+                                                    .and_then(|l| l.summarization.as_ref().or(l.background.as_ref()).or(l.remote.as_ref()))
                                                     .and_then(|r| r.model.as_deref())
-                                                    .unwrap_or("unknown")
+                                                    .unwrap_or("summarizer")
                                                     .to_string();
 
+                                                let pers_llm = personalization_llm.clone();
                                                 tokio::spawn(async move {
                                                     if let Err(e) = newscope::processing::batch_process_articles(
                                                         &pool,
                                                         &article_ids,
                                                         provider,
-                                                        &model
-                                                    ).await {
-                                                        error!("Error processing articles: {:?}", e);
+                                                        pers_llm,
+                                                        &model,
+                                                    )
+                                                    .await {
+                                                        error!("Error summarizing articles: {:?}", e);
                                                     }
                                                 });
                                             }
+                                            
                                         }
                                     }
                                     Err(e) => error!("worker: failed to store items for feed {}: {}", feed_id, e),
@@ -438,25 +431,36 @@ async fn run_worker(
             Err(e) => error!("worker: failed to query feeds: {}", e),
         }
 
-        // 4. Process missing embeddings (Phase 1)
-        if let Some(provider) = &background_llm {
+        // 4. Process missing article embeddings
+        if let Some(provider) = &embedding_llm {
             let provider = provider.clone();
             let pool = _db_pool.clone();
             let model = config.llm.as_ref()
-                .and_then(|l| l.remote.as_ref())
+                .and_then(|l| l.embedding.as_ref())
+                .or(config.llm.as_ref().and_then(|l| l.remote.as_ref()))
                 .and_then(|r| r.model.as_deref())
                 .unwrap_or("unknown")
                 .to_string();
 
-            // Spawn to avoid blocking the loop
             tokio::spawn(async move {
                 if let Err(e) = newscope::processing::process_missing_embeddings(
                     &pool,
                     provider,
                     &model, 
-                    20 // Limit batch size for embeddings
+                    20
                 ).await {
                      error!("Error processing embeddings: {:?}", e);
+                }
+            });
+        }
+        
+        // 5. Initialize user vectors
+        if let Some(provider) = &embedding_llm {
+            let provider = provider.clone();
+            let pool = _db_pool.clone();
+            tokio::spawn(async move {
+                if let Err(e) = newscope::personalize_worker::initialize_user_vectors(&pool, provider).await {
+                    error!("Error initializing user vectors: {:?}", e);
                 }
             });
         }

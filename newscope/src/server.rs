@@ -29,7 +29,10 @@ pub struct AppState {
     pub started_at: DateTime<Utc>,
     pub config: Option<Arc<Config>>,
     pub db: SqlitePool,
-    pub llm_provider: Option<Arc<dyn crate::llm::LlmProvider>>,
+    pub summarization_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+    pub personalization_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+    pub interaction_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+    pub embedding_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
 }
 
 /// Response structure for `/api/v1/status`.
@@ -763,9 +766,10 @@ struct FetchRequest {
 async fn trigger_fetch(state: &State<AppState>, req: Json<FetchRequest>) -> Result<Status, Status> {
     let feed_id = req.feed_id;
     let pool = state.db.clone();
+    let llm_provider = state.summarization_llm.clone();
     let config = state.config.clone();
-    let llm_provider = state.llm_provider.clone();
 
+    let personalization_llm = state.personalization_llm.clone();
     // Spawn a background task to fetch and parse the feed
     tokio::spawn(async move {
         tracing::info!("manual fetch: triggered for feed id {}", feed_id);
@@ -838,11 +842,13 @@ async fn trigger_fetch(state: &State<AppState>, req: Json<FetchRequest>) -> Resu
                                     .to_string();
                                 let ids = new_article_ids.clone();
 
+                                let pers_llm_inner = personalization_llm.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = crate::processing::batch_process_articles(
                                         &pool_clone,
                                         &ids,
                                         llm_prov,
+                                        pers_llm_inner,
                                         &model,
                                     )
                                     .await
@@ -1013,9 +1019,10 @@ async fn update_session(
 #[post("/api/v1/process-pending")]
 async fn process_pending(state: &State<AppState>) -> Status {
     let pool = state.db.clone();
-    let llm_provider = state.llm_provider.clone();
+    let llm_provider = state.summarization_llm.clone();
     let config = state.config.clone();
 
+    let personalization_llm = state.personalization_llm.clone();
     tokio::spawn(async move {
         tracing::info!("Manual trigger: processing pending articles");
 
@@ -1028,8 +1035,14 @@ async fn process_pending(state: &State<AppState>) -> Status {
                 .unwrap_or("unknown")
                 .to_string();
 
-            match crate::processing::process_pending_articles(&pool, llm_prov, &model, Some(50))
-                .await
+            match crate::processing::process_pending_articles(
+                &pool,
+                llm_prov,
+                personalization_llm,
+                &model,
+                Some(50),
+            )
+            .await
             {
                 Ok(count) => tracing::info!("Processed {} pending articles", count),
                 Err(e) => tracing::error!("Failed to process pending articles: {:?}", e),
@@ -1328,75 +1341,28 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
 ///
 /// This function blocks until the Rocket server shuts down (it awaits `rocket.launch().await`)
 /// and returns an error if Rocket fails to start.
-pub async fn launch_rocket(db_pool: Arc<SqlitePool>, config: Option<Arc<Config>>) -> Result<()> {
+pub async fn launch_rocket(
+    db: SqlitePool,
+    summarization_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+    personalization_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+    interaction_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+    embedding_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+    config: Option<Arc<Config>>,
+) -> Result<()> {
+    let state = AppState {
+        started_at: Utc::now(),
+        config,
+        db,
+        summarization_llm,
+        personalization_llm,
+        interaction_llm,
+        embedding_llm,
+    };
     // The DB pool and optional application config are provided by the caller.
     // The server must not re-init or migrate the database here; migrations and pool
     // creation are the responsibility of the process startup code (main).
 
-    // Initialize LLM provider if configured
-    let llm_provider: Option<Arc<dyn crate::llm::LlmProvider>> = if let Some(ref cfg) = config {
-        if let Some(ref llm_config) = cfg.llm {
-            if llm_config.adapter.as_deref() == Some("remote") {
-                if let Some(ref remote_cfg) = llm_config.remote {
-                    if let (Some(api_url), Some(api_key_env)) =
-                        (&remote_cfg.api_url, &remote_cfg.api_key_env)
-                    {
-                        if let Ok(api_key) = std::env::var(api_key_env) {
-                            let model = remote_cfg
-                                .model
-                                .clone()
-                                .unwrap_or_else(|| "gpt-4o-mini".to_string());
-                            let provider = crate::llm::remote::RemoteLlmProvider::new(
-                                api_url, &api_key, &model,
-                            )
-                            .with_defaults(
-                                remote_cfg.timeout_seconds.unwrap_or(30),
-                                500,
-                                0.7,
-                            );
-                            tracing::info!(
-                                "LLM provider initialized: remote ({}) at {}",
-                                model,
-                                api_url
-                            );
-                            Some(Arc::new(provider) as Arc<dyn crate::llm::LlmProvider>)
-                        } else {
-                            tracing::warn!(
-                                "LLM configured but API key env var '{}' not set",
-                                api_key_env
-                            );
-                            None
-                        }
-                    } else {
-                        tracing::warn!("LLM remote config: missing api_url or api_key_env");
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                tracing::info!(
-                    "LLM adapter '{}' not supported yet",
-                    llm_config.adapter.as_deref().unwrap_or("none")
-                );
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let state = AppState {
-        started_at: Utc::now(),
-        config,
-        db: db_pool.as_ref().clone(), // Unwrap Arc since SqlitePool is already ref-counted
-        llm_provider,
-    };
-
-    // Build Rocket with managed state and mount routes, applying server.bind and server.port from a config file if present.
-    // Determine config path: env CONFIG_PATH -> /config/config.toml -> ./config.toml
+    tracing::info!("Starting Rocket HTTP server");
     let mut fig = rocket::Config::figment();
     let cfg_path_env =
         std::env::var("CONFIG_PATH").unwrap_or_else(|_| "/config/config.toml".to_string());

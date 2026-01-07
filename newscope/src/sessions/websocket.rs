@@ -40,7 +40,7 @@ pub fn chat_websocket(
     state: &State<crate::server::AppState>,
 ) -> Channel<'static> {
     let pool = state.db.clone();
-    let llm = state.llm_provider.clone();
+    let llm = state.interaction_llm.clone();
     let config = state.config.clone();
     let language = accept_lang.0;
 
@@ -133,7 +133,7 @@ pub fn chat_websocket(
                         // Initialize from Accept-Language header (language_clone is moved into the spawn)
                         let mut user_profile_lang = language_clone.clone(); // default to Accept-Language header
 
-                        let user_profile_opt = match crate::personalization::get_user_profile(&pool, user_id).await {
+                        let _user_profile_opt = match crate::personalization::get_user_profile(&pool, user_id).await {
                             Ok(profile) => {
                                 reading_speed = profile.reading_speed;
                                 user_profile_lang = profile.language.clone();
@@ -367,6 +367,7 @@ pub fn chat_websocket(
                                             // Update shared context
                                             if let Ok(mut ctx) = context_bg_inner.lock() {
                                                 ctx.push(ArticleContext {
+                                                    id: article_id,
                                                     title: final_title.clone(),
                                                     summary: final_summary.clone(),
                                                     content: details.clone(),
@@ -399,6 +400,14 @@ pub fn chat_websocket(
                                             .bind(session_id_inner)
                                             .execute(&pool_inner)
                                             .await;
+
+                                            // Update User Vector on View (Passive signal)
+                                            let pool_v_inner = pool_inner.clone();
+                                            tokio::spawn(async move {
+                                                if let Err(e) = crate::personalize_worker::update_user_vector_from_interaction(&pool_v_inner, user_id_inner, article_id, 0.2).await {
+                                                    error!("Error updating user vector from view: {:?}", e);
+                                                }
+                                            });
                                             
                                             // Small delay for progressive UI effect (even if processing was fast)
                                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -465,6 +474,15 @@ pub fn chat_websocket(
                                 .bind(article_id)
                                 .execute(&pool)
                                 .await;
+
+                                // Update User Vector (Rating is a strong signal)
+                                let weight = (rating as f32 - 2.0).max(0.1); // 1 star = 0.1, 3 stars = 1.0, 5 stars = 3.0
+                                let pool_clone = pool.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::personalize_worker::update_user_vector_from_interaction(&pool_clone, user_id, article_id, weight).await {
+                                        error!("Error updating user vector from rating: {:?}", e);
+                                    }
+                                });
                             }
                             continue;
                         }
@@ -487,6 +505,17 @@ pub fn chat_websocket(
                             let current_articles = article_context_chat.lock()
                                 .map(|guard| guard.clone())
                                 .unwrap_or_default();
+                            
+                            // Update User Vector (Chatting about articles is a signal)
+                            for art in &current_articles {
+                                let pool_clone = pool.clone();
+                                let art_id = art.id;
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::personalize_worker::update_user_vector_from_interaction(&pool_clone, user_id, art_id, 0.5).await {
+                                        error!("Error updating user vector from chat context: {:?}", e);
+                                    }
+                                });
+                            }
 
                             match handle_chat_message(&pool, provider, session_id, &user_message, &current_articles).await {
                                 Ok(resp) => resp,
@@ -531,6 +560,7 @@ pub fn chat_websocket(
 /// Context for an article to be used in chat
 #[derive(Clone, Debug)]
 pub struct ArticleContext {
+    pub id: i64,
     pub title: String,
     pub summary: String,
     pub content: Option<String>,

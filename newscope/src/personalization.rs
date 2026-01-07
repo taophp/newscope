@@ -67,7 +67,6 @@ impl UserArticleSummaryRow {
 
 use anyhow::{Context, Result};
 use sqlx::{SqlitePool, Row};
-use std::sync::Arc;
 use crate::llm::{LlmProvider, LlmRequest};
 
 /// Evaluate article relevance for a specific user
@@ -113,8 +112,9 @@ Return ONLY valid JSON: {{\"score\": 0.8, \"reasons\": [\"matches interest in AI
         timeout_seconds: Some(15),
     }).await.context("Failed to generate relevance evaluation")?;
 
-    // Parse JSON response
-    match serde_json::from_str::<RelevanceEvaluation>(&response.content) {
+    // Parse JSON response with robustness
+    let cleaned_content = crate::llm::extract_json_from_text(&response.content).unwrap_or(response.content.clone());
+    match serde_json::from_str::<RelevanceEvaluation>(&cleaned_content) {
         Ok(eval) => Ok(eval),
         Err(_) => {
             // Fallback: default moderate relevance if parsing fails
@@ -191,7 +191,9 @@ Return ONLY valid JSON:
         details: Option<String>,
     }
 
-    match serde_json::from_str::<PersonalizedJson>(&response.content) {
+    // Parse JSON response with robustness
+    let cleaned_content = crate::llm::extract_json_from_text(&response.content).unwrap_or(response.content.clone());
+    match serde_json::from_str::<PersonalizedJson>(&cleaned_content) {
         Ok(json) => Ok(PersonalizedSummary {
             headline: json.headline,
             bullets: json.bullets,
@@ -275,4 +277,39 @@ pub async fn get_user_profile(pool: &SqlitePool, user_id: i64) -> Result<UserPro
         preferred_categories,
         keyword_boosts,
     })
+}
+
+/// Fetch user interest vector from vec_users table
+pub async fn get_user_vector(pool: &SqlitePool, user_id: i64) -> Result<Option<Vec<f32>>> {
+    let row = sqlx::query(
+        "SELECT embedding FROM vec_users WHERE user_id = ?"
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| {
+        let bytes: Vec<u8> = r.get("embedding");
+        bytes.chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
+    }))
+}
+
+/// Helper to convert Vec<f32> to bytes for BLOB storage
+fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Update or insert user interest vector
+pub async fn update_user_vector(pool: &SqlitePool, user_id: i64, embedding: &[f32]) -> Result<()> {
+    let bytes = f32_vec_to_bytes(embedding);
+    sqlx::query(
+        "INSERT OR REPLACE INTO vec_users (user_id, embedding) VALUES (?, ?)"
+    )
+    .bind(user_id)
+    .bind(bytes)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
